@@ -701,7 +701,8 @@ def find_matches(
                 elif has_value:
                     # "Nato il 10/12/1985  CF: RSS..." -> il valore si ferma
                     # all'etichetta successiva, che viene trattata a parte
-                    nxt = _NEXT_LABEL.search(text, v_start + 1, end)
+                    nxt = (_NEXT_LABEL.search(text, v_start + 1, end)
+                           or _SENTENCE_END.search(text, v_start + 1, end))
                     if nxt:
                         end = len(text[:nxt.start()].rstrip(" \t,;-"))
                         if end <= v_start:
@@ -825,6 +826,10 @@ _NEXT_LABEL = re.compile(
     r"E-?mail|Residen\w*|Indirizzo|Domicilio|Et[àa]|Cartella|Nosologico|Reparto|"
     r"Data\s+(?:di\s+)?(?:ricovero|dimissione|esame|nascita)|Tessera|Paziente)\b\s*[:.]?"
 )
+
+
+# fine frase: "01/02/1990. Verdi riferisce..." -> il valore si ferma alla data
+_SENTENCE_END = re.compile(r"(?<=[^\s.])\.(?=\s+[A-ZÀ-ÖØ-Þ])")
 
 
 def _trim_name_end(text: str, start: int, end: int) -> int:

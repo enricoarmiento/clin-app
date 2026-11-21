@@ -5,6 +5,7 @@ Nessuna funzione esegue I/O di rete: il motore lavora solo sul testo ricevuto.
 """
 
 import json
+import re
 from pathlib import Path
 
 from anonymize_engine import collect_names, find_matches
@@ -24,10 +25,31 @@ def _out(res):
                       ensure_ascii=False)
 
 
-def run_text(text, level, previous_json):
+# L'OCR sbaglia qualche carattere ("RSSMRA857T10A562S"): un codice deformato
+# non supera piu' i controlli. Nelle foto si oscura per prudenza ogni sequenza
+# che somiglia a un identificativo.
+_OCR_CODE = re.compile(r"\b[A-Za-z0-9]{10,}\b")
+_OCR_NUMBER = re.compile(r"(?<![\d,.])\+?\d[\d \-./]{5,}\d(?![\d,])")
+
+
+def ocr_suspects(text):
+    out = []
+    for m in _OCR_CODE.finditer(text):
+        tok = m.group(0)
+        if sum(c.isdigit() for c in tok) >= 3 and sum(c.isalpha() for c in tok) >= 3:
+            out.append(tok)
+    for m in _OCR_NUMBER.finditer(text):
+        if sum(c.isdigit() for c in m.group(0)) >= 7:
+            out.append(m.group(0))
+    return out
+
+
+def run_text(text, level, previous_json, ocr=False):
     """Testo libero (incollato, trascrizione audio, OCR)."""
     prev, names = _prev(previous_json)
-    return _out(anonymize_text(text, level=int(level), previous=prev or None, names=names))
+    explicit = ocr_suspects(text) if ocr else None
+    return _out(anonymize_text(text, level=int(level), previous=prev or None, names=names,
+                               explicit=explicit))
 
 
 def run_pages(pages_json, level, previous_json):
@@ -56,11 +78,12 @@ def run_file(path, level, previous_json):
 
 
 def spans(text, level, previous_json):
-    """Intervalli sensibili di un testo, per oscurare le parole in un'immagine."""
+    """Intervalli sensibili del testo di una foto, per oscurarne le parole."""
     _, names = _prev(previous_json)
     names = names + collect_names(text)
     out = []
-    for m in find_matches(text, int(level), None, keep_labels=True, derived_targets=names):
+    for m in find_matches(text, int(level), ocr_suspects(text), keep_labels=True,
+                          derived_targets=names):
         out.append([m.start, m.end, m.category])
     return json.dumps(out)
 

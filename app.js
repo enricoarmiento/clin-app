@@ -202,7 +202,7 @@ async function runImage(file) {
   drawImage();
 
   $("image-wrap").hidden = false;
-  const res = apply(py.run_text(text, level(), JSON.stringify(loadMap())));
+  const res = apply(py.run_text(text, level(), JSON.stringify(loadMap()), true));
   res.notes = ["Testo ricavato con OCR: verificare l'immagine, toccando le parole da oscurare."];
   show(res);
   status(`Foto elaborata: ${redacted.size} parole oscurate. Controllare prima dell'invio.`);

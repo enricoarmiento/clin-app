@@ -49,7 +49,7 @@ async function boot() {
     const { loadPyodide } = await import("./vendor/pyodide/pyodide.mjs");
     const pyodide = await loadPyodide({ indexURL: new URL("vendor/pyodide/", location.href).href });
     for (const f of ["anonymize_engine.py", "clin_text.py", "tabular_engine.py", "clin_web.py"]) {
-      const src = await (await fetch(`py/${f}`)).text();
+      const src = await (await fetch(`py/${f}`, { cache: "no-cache" })).text();
       pyodide.FS.writeFile(f, src);
     }
     pyodide.runPython("import sys; sys.path.insert(0, '.')");

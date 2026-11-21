@@ -1,10 +1,13 @@
 // Clin - service worker: funzionamento offline e ricezione dal menu Condividi (Android).
-// 44d68efb5247 e ["./", "app.js", "apple-touch-icon.png", "fonts/AlbertSans.woff2", "fonts/OFL-AlbertSans.txt", "icon-192.png", "icon-512.png", "icon-maskable-512.png", "index.html", "logo.svg", "manifest.webmanifest", "py/anonymize_engine.py", "py/clin_text.py", "py/clin_web.py", "py/tabular_engine.py", "style.css", "vendor/pdfjs/pdf.min.mjs", "vendor/pdfjs/pdf.worker.min.mjs", "vendor/pyodide/pyodide-lock.json", "vendor/pyodide/pyodide.asm.js", "vendor/pyodide/pyodide.asm.wasm", "vendor/pyodide/pyodide.mjs", "vendor/pyodide/python_stdlib.zip", "vendor/tess/ita.traineddata.gz", "vendor/tess/tesseract-core-lstm.wasm.js", "vendor/tess/tesseract-core-simd-lstm.wasm.js", "vendor/tess/tesseract.min.js", "vendor/tess/worker.min.js"] vengono compilati da build.py.
-const CACHE = "clin-44d68efb5247";
+// 37a7c834b45f e ["./", "app.js", "apple-touch-icon.png", "fonts/AlbertSans.woff2", "fonts/OFL-AlbertSans.txt", "icon-192.png", "icon-512.png", "icon-maskable-512.png", "index.html", "logo.svg", "manifest.webmanifest", "py/anonymize_engine.py", "py/clin_text.py", "py/clin_web.py", "py/tabular_engine.py", "style.css", "vendor/pdfjs/pdf.min.mjs", "vendor/pdfjs/pdf.worker.min.mjs", "vendor/pyodide/pyodide-lock.json", "vendor/pyodide/pyodide.asm.js", "vendor/pyodide/pyodide.asm.wasm", "vendor/pyodide/pyodide.mjs", "vendor/pyodide/python_stdlib.zip", "vendor/tess/ita.traineddata.gz", "vendor/tess/tesseract-core-lstm.wasm.js", "vendor/tess/tesseract-core-simd-lstm.wasm.js", "vendor/tess/tesseract.min.js", "vendor/tess/worker.min.js"] vengono compilati da build.py.
+const CACHE = "clin-37a7c834b45f";
 const FILES = ["./", "app.js", "apple-touch-icon.png", "fonts/AlbertSans.woff2", "fonts/OFL-AlbertSans.txt", "icon-192.png", "icon-512.png", "icon-maskable-512.png", "index.html", "logo.svg", "manifest.webmanifest", "py/anonymize_engine.py", "py/clin_text.py", "py/clin_web.py", "py/tabular_engine.py", "style.css", "vendor/pdfjs/pdf.min.mjs", "vendor/pdfjs/pdf.worker.min.mjs", "vendor/pyodide/pyodide-lock.json", "vendor/pyodide/pyodide.asm.js", "vendor/pyodide/pyodide.asm.wasm", "vendor/pyodide/pyodide.mjs", "vendor/pyodide/python_stdlib.zip", "vendor/tess/ita.traineddata.gz", "vendor/tess/tesseract-core-lstm.wasm.js", "vendor/tess/tesseract-core-simd-lstm.wasm.js", "vendor/tess/tesseract.min.js", "vendor/tess/worker.min.js"];
 
 self.addEventListener("install", (event) => {
-  event.waitUntil(caches.open(CACHE).then((c) => c.addAll(FILES)).then(() => self.skipWaiting()));
+  // cache: "reload" scavalca la cache HTTP: una nuova versione non riceve file vecchi
+  event.waitUntil(caches.open(CACHE)
+    .then((c) => c.addAll(FILES.map((f) => new Request(f, { cache: "reload" }))))
+    .then(() => self.skipWaiting()));
 });
 
 self.addEventListener("activate", (event) => {

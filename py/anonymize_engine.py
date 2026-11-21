@@ -34,6 +34,8 @@ except ImportError:  # app web (Pyodide): si usa solo l'analisi del testo
 
 import clin_ocr
 
+import clin_llm
+
 __all__ = [
     "Detection",
     "FileResult",
@@ -70,9 +72,28 @@ MAX_LEVEL = 10
 # Da 1 a 4 parole con iniziale maiuscola (nomi propri), anche con particelle
 # tipo "De", "Di", "D'". `_CAP_NAME_CS` forza la sensibilita' alle maiuscole
 # anche dentro un pattern con (?i).
-_CAP_WORD = r"[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’]+"
-_CAP_NAME = _CAP_WORD + r"(?:[ \t]+" + _CAP_WORD + r"){0,3}"
+_UP = "A-ZÀ-ÖØ-ÞĀĂĄĆĈĊČĎĐĒĔĖĘĚĜĞĠĢĤĦĨĪĬĮİĴĶĹĻĽĿŁŃŅŇŊŌŎŐŒŔŖŘŚŜŞŠŢŤŦŨŪŬŮŰŲŴŶŸŹŻŽȘȚ"
+_LETTER = "A-Za-zÀ-ÖØ-öø-ɏȘșȚțḀ-ỿ"
+_CAP_WORD = r"[" + _UP + r"][" + _LETTER + r"'’]+"
+# particelle dei cognomi ("Lo Iacono", "De Luca", "Dela Cruz", "El Amrani", "van der Berg")
+_PARTICLE = r"(?:[Dd][aeiu]|[Dd]e[il]|[Dd]ell[ao']|[Dd]ela|[Ll][aeio]|[Vv][ao]n|[Dd]er|[Ee]l|[Aa]l|[Bb]in|[Bb]en|[Dd]os|[Dd]as)"
+_CAP_NAME = _CAP_WORD + r"(?:[ \t]+(?:" + _PARTICLE + r"[ \t]+)?" + _CAP_WORD + r"){0,3}"
 _CAP_NAME_CS = r"(?-i:" + _CAP_NAME + r")"
+
+# Nome di via: parole maiuscole, particelle minuscole ("dei", "della"), numeri
+# romani o date ("XX Settembre", "4 Novembre"). Deve iniziare con maiuscola o cifra.
+_STREET_TYPES = (r"(?:Via|Viale|V\.le|V\.|Piazza|Piazzale|P\.zza|P\.za|P\.le|Corso|C\.so|Largo|Vicolo|"
+                 r"Vico|Strada(?:\s+(?:Statale|Provinciale|Comunale|Vicinale))?|S\.S\.|SS|S\.P\.|Str\.|"
+                 r"Contrada|C\.da|Loc\.|Localit[àa]|Frazione|Fraz\.|Borgo|Lungomare|Lungotevere|Lungarno|"
+                 r"Circonvallazione|Traversa|Salita|Discesa|Calle|Campo|Rione|Galleria|Vicoletto|Stradone)")
+_STREET_WORD = r"(?:[A-ZÀ-ÖØ-Þ][A-Za-zÀ-ÖØ-öø-ÿ'’.]*|[IVXLC]{1,6}|\d{1,2})"
+_STREET_PART = r"(?:d[ei]|de[il]|dell[ao']?|degli|delle|d'|da|la|le|lo|il|san|santa|sant')"
+_STREET_NAME = (_STREET_WORD + r"(?:[ \t]+(?:" + _STREET_PART + r"[ \t]+|" + _STREET_PART + r"(?=[A-ZÀ-Ö]))?"
+                + _STREET_WORD + r"){0,5}")
+_NOT_STREET = (r"(?!(?:orale|os|endovenosa|e\.?v\.?|intramuscolare|i\.?m\.?|sottocutanea|s\.?c\.?|"
+               r"rettale|sublinguale|inalatoria|topica|transdermica|aeree?|biliari?|urinari[ae]|"
+               r"telefonica|telefono|e-?mail|mail|pec|fax|web|posta|internet|libera|di|del|della)\b)")
+_CIVICO = r"(?:,?[ \t]*(?:n\.?[ \t]*|n°[ \t]*)?\d{1,4}(?:[ \t]*/?[ \t]*[A-Za-z](?![A-Za-z]))?(?:/\d{1,3})?)"
 
 _MONTHS_IT = r"(?:gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre|genn?\.?|febb?r?\.?|mar\.?|apr\.?|magg?\.?|giu\.?|lug\.?|ago\.?|sett?\.?|ott\.?|nov\.?|dic\.?)"
 _MONTHS_EN = r"(?:january|february|march|april|may|june|july|august|september|october|november|december)"
@@ -89,11 +110,11 @@ OFFICIAL_ID_PATTERNS = [
 
 # 2. Etichette con nominativo del paziente (IT, EN, FR, ES, DE)
 PATIENT_LABEL_PATTERNS = [
-    r'(?i)\b(?:Paziente|Patient|Nominativo|Assistito|Cognome\s*e?\s*Nome|Nome\s*e?\s*Cognome|Patient\s*Name|Nom\s*et\s*prénom|Nombre\s*y\s*apellido)\s*[:]\s*(?P<v>[A-Za-zÀ-ÖØ-öø-ÿ\s\'\-]{2,})',
+    r'(?i)\b(?:Paziente|Patient|Nominativo|Assistito|Cognome\s*e?\s*Nome|Nome\s*e?\s*Cognome|Patient\s*Name|Nom\s*et\s*prénom|Nombre\s*y\s*apellido)\s*[:]\s*(?P<v>[A-Za-zÀ-ÖØ-öø-ɏȘșȚțḀ-ỿ\s\'\-]{2,})',
     r'(?i)\b(?:Paziente|Patient|Nominativo|Assistito|Cognome\s*e?\s*Nome|Nome\s*e?\s*Cognome|Patient\s*Name|Nom\s*et\s*prénom|Nombre\s*y\s*apellido)\s+(?P<v>' + _CAP_NAME_CS + r')',
-    r'(?i)\b(?:Cognome|Surname|Nom|Apellido|Nachname)\s*[:]\s*(?P<v>[A-Za-zÀ-ÖØ-öø-ÿ\s\'\-]{2,})',
+    r'(?i)\b(?:Cognome|Surname|Nom|Apellido|Nachname)\s*[:]\s*(?P<v>[A-Za-zÀ-ÖØ-öø-ɏȘșȚțḀ-ỿ\s\'\-]{2,})',
     r'(?i)\b(?:Cognome|Surname|Nom|Apellido|Nachname)\s+(?P<v>' + _CAP_NAME_CS + r')',
-    r'(?i)\b(?:Nome|First\s*name|Prénom|Nombre|Vorname)\s*[:]\s*(?P<v>[A-Za-zÀ-ÖØ-öø-ÿ\s\'\-]{2,})',
+    r'(?i)\b(?:Nome|First\s*name|Prénom|Nombre|Vorname)\s*[:]\s*(?P<v>[A-Za-zÀ-ÖØ-öø-ɏȘșȚțḀ-ỿ\s\'\-]{2,})',
     r'(?i)\b(?:Nome|First\s*name|Prénom|Nombre|Vorname)\s+(?P<v>' + _CAP_NAME_CS + r')',
     # Titoli di cortesia: il valore comprende solo parole con iniziale maiuscola,
     # cosi' "Sig. Rossi ha riferito" oscura "Rossi" e non l'intera frase.
@@ -102,13 +123,26 @@ PATIENT_LABEL_PATTERNS = [
     r'(?i)\b(?:Il|La)\s+(?:piccol[oa]|bambin[oa]|neonat[oa]|minore)\s+(?P<v>' + _CAP_NAME_CS + r')',
 ]
 
+# 2-bis. Persone citate senza etichetta, riconosciute dal contesto (parentela,
+# ruolo): "riferisce la figlia Giulia", "accompagnato dal marito Paolo Neri".
+_KIN = (r"(?:moglie|marito|coniuge|figli[oa]|fratello|sorella|madre|padre|mamma|pap[àa]|nonn[oa]|nipote|"
+        r"zi[oa]|cugin[oa]|genero|nuora|suocer[oa]|cognat[oa]|compagn[oa]|convivente|fidanzat[oa]|"
+        r"badante|caregiver|tutore|tutrice|amministratore\s+di\s+sostegno|curatore|vicin[oa](?:\s+di\s+casa)?|"
+        r"amic[oa]|collega|interprete|mediatore\s+culturale|mediatrice\s+culturale)")
+PERSON_CONTEXT_PATTERNS = [
+    r'\b(?i:' + _KIN + r')[ \t]*,?[ \t]+(?:(?i:sig\.?(?:ra|na)?|signor[ae]?)[ \t]+)?(?P<v>' + _CAP_NAME_CS + r')',
+    r'\b(?i:discuss[oa]|concordat[oa]|condivis[oa]|parlato|sentit[oa]|contattat[oa]|informat[oa]|'
+    r'visitat[oa]|vist[oa])[ \t]+(?i:con|da|dal|dalla|col|il|la)[ \t]+'
+    r'(?:(?i:dott\.ssa|dott\.?|dr\.?|prof\.?|sig\.?(?:ra)?)[ \t]+)?(?P<v>' + _CAP_NAME_CS + r'(?=[ \t]+[A-ZÀ-Ö]|[ \t]*[(,]))',
+]
+
 # 3. Date di nascita e dati anagrafici
 DOB_PATTERNS = [
     r'(?i)\b(?:Data\s*(?:di)?\s*Nascita|Data\s*Nasc\.?|D\.?N\.?|Nascita|Luogo\s*e\s*Data\s*di\s*Nascita|Date\s*of\s*Birth|DOB|Birth\s*Date|Date\s*de\s*naissance|Fecha\s*de\s*nacimiento|Geburtsdatum)[:\s]+(?P<v>[^\n\r,;\t]{2,})',
     r'(?i)\b(?:Nato\/a|Nato|Nata|Né\(e\)|Né|Née|Nacido\/a|Geboren)(?:\s*il|\s*le|\s*el|\s*am)?[:\s]+(?P<v>[^\n\r,;\t]{2,})',
-    r'(?i)\b(?:Et[àa]|Age|Anni)[:\s]+(?P<v>\d{1,3}\s*(?:anni|aa|mesi|y|yrs)?)\b',
+    r'(?i)\b(?:Et[àa]|Age|Anni)[:\s]+(?P<v>\d{1,3}(?![.,]\d)\s*(?:anni|aa|mesi|y|yrs)?)\b',
     # eta' in prosa ("di 45 anni", "di 5 mesi"); le durate ("da 3 giorni") restano visibili
-    r'(?i)\bdi\s+(?P<v>\d{1,3}\s+(?:anni|mesi))\b(?!\s+(?:di\s+)?(?:terapia|trattamento|follow|distanza|durata))',
+    r'(?i)\bdi\s+(?P<v>\d{1,3}\s+(?:anni|mesi))\b(?!\s+(?:di|da|fa|prima|dopo|dal|dalla|dall)\b|\s+(?:terapia|trattamento|follow|distanza|durata))',
     r'(?i)\b(?P<v>\d{1,3})[\s\-]?(?:enne|year[\s\-]old|anni\s+compiuti)\b',
 ]
 
@@ -116,11 +150,29 @@ DOB_PATTERNS = [
 CONTACT_PATTERNS = [
     r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b',  # Email
     r'(?i)\b(?:Tel\.?|Telefono|Phone|Cell\.?|Cellulare|Mobile|Fax|Recapito)[:\s]+(?P<v>[0-9\+\s\-\(\)\/]{5,})',
-    r'(?i)\b(?:Residenza|Indirizzo|Domicilio|Address|Adresse|Comune|Citt[àa]|City|Via|Viale|Piazza|C\.?A\.?P\.?)[:\s]+(?P<v>[^\n\r;\t]{2,})',
+    # "Via", "Piazza" non sono etichette: "per via orale" non e' un indirizzo
+    r'(?i)\b(?:Residenza|Residente|Indirizzo|Domicilio|Domiciliat[oa]|Address|Adresse)\s*[:]\s*(?P<v>[^\n\r;\t]{2,})',
+    r'(?i)\b(?:Residenza|Indirizzo|Domicilio|Address)[ \t]+(?=[A-ZÀ-Ö0-9])(?-i:(?P<v>[A-ZÀ-Ö0-9][^\n\r;\t]{2,}))',
+    r'(?i)\b(?:Comune|Citt[àa]|City|Localit[àa])(?:\s+di\s+residenza)?\s*:\s*(?P<v>[^\n\r;\t,]{2,})',
     r'(?i)\b(?:CAP|Codice\s*Postale|Postal\s*Code|ZIP)[:\s]+(?P<v>\d{4,6})\b',
     r'(?i)\b(?:PEC|E-?mail|Posta\s*elettronica)[:\s]+(?P<v>\S+@\S+)',
-    # indirizzo senza etichetta: "Via Roma 12", "P.zza Garibaldi, 3"
-    r'\b(?i:Via|Viale|V\.le|Piazza|P\.zza|P\.za|Corso|C\.so|Largo|Vicolo|Strada|Contrada|Loc\.|Localit[àa])\s+' + _CAP_NAME + r'(?:,?\s*\d{1,4}[A-Za-z]?)?',
+    # indirizzo senza etichetta: "Via Roma 12", "P.zza Garibaldi, 3", "Via dei Mille 5"
+    # con l'iniziale maiuscola ("Via Roma", "P.zza Garibaldi") il civico e' facoltativo
+    r'\b' + _STREET_TYPES + r'[ \t]+' + _STREET_NAME + _CIVICO + r'?',
+    # "via"/"piazza" minuscolo ("abita in via Roma 12"): solo con numero civico,
+    # e mai le vie di somministrazione o i mezzi ("per via orale", "via email")
+    r'(?i)\b(?:via|viale|piazza|corso|largo|vicolo|strada|contrada|v\.le|p\.zza)[ \t]+' + _NOT_STREET
+    + r'[a-zà-ùA-ZÀ-Ö\'][a-zà-ùA-ZÀ-Ö\']*(?:[ \t]+[a-zà-ùA-ZÀ-Ö\']+){0,3}[ \t]+\d{1,4}[a-z]?\b'
+    + r'(?![ \t]*(?:cp|cpr|compress|mg|g|ml|gtt|gocce|fl|fiale|volte|x|ui|mcg|/))',
+    # CAP seguito dal comune: "00185 Roma", "20121 Milano (MI)"
+    r'(?<![\d.,/])\b\d{5}[ \t]+(?-i:[A-ZÀ-Ö][a-zà-öø-ÿ\']+(?:[ \t]+(?:[A-ZÀ-Ö][a-zà-öø-ÿ\']+|di|del|sul|in|d\'))*)(?:[ \t]*\(?[A-Z]{2}\)?(?![A-Za-z]))?',
+    # "residente a Roma", "domiciliata in Via ..." (la via e' coperta dal pattern sopra)
+    r'(?i)\b(?:residente|domiciliat[oa]|abitante|vive|nat[oa])[ \t]+(?:a|ad|in)[ \t]+(?P<v>(?-i:[A-ZÀ-Ö][a-zà-öø-ÿ\']+(?:[ \t]+[A-ZÀ-Ö][a-zà-öø-ÿ\']+){0,2}))',
+    # telefoni senza etichetta (cellulari, fissi, internazionali)
+    r'(?<![\d,./])(?:(?:\+|00)39[ \t.\-]?)?3\d{2}(?:[ \t.\-/]?\d){6,7}(?!\d|[.,]\d)',
+    r'(?<![\d,./])(?:(?:\+|00)39[ \t.\-]?)?0\d{1,3}[ \t.\-/]\d{2,4}(?:[ \t.\-]?\d{2,5}){0,2}(?!\d|[.,]\d)',
+    r'(?<![\d,./])(?:(?:\+|00)39[ \t.\-]?)?0\d{8,9}(?!\d|[.,]\d)',  # compatto: 9-10 cifre (P.IVA ne ha 11)
+    r'(?<![\w+])\+(?!39)\d{1,3}[ \t.\-]?\(?\d{1,4}\)?(?:[ \t.\-]?\d{2,4}){2,4}\b',
 ]
 
 # 4-bis. Dati bancari / finanziari
@@ -139,6 +191,32 @@ RECORD_PATTERNS = [
     r'(?i)\b(?:ID\s*Paziente|Cod\.?\s*Paziente|Patient\s*ID|Code\s*patient)[:\s]+(?P<v>[0-9A-Za-z\/\-]+)',
     r'(?i)\bCodice\s*Fiscale[:\s]+(?P<v>[A-Za-z0-9]+)',
     r'(?i)\b(?:Referto|Report)\s*(?:N\.?|n\.?|N°|nº)[:\s]*(?P<v>[0-9A-Za-z\/\-]{3,})',
+    # "Verbale di Pronto Soccorso n. 0912345", "Scheda di dimissione n. 12345"
+    r'(?i)\b(?:verbale|pratica|richiesta|scheda|cartella|referto|certificato|lettera|documento|modulo|'
+    r'consenso|impegnativa|ricetta|denuncia|segnalazione)\b[^\n\d:]{0,40}?\b(?:n\.|nr\.?|n°|nº|numero)\s*[:.]?\s*'
+    r'(?P<v>\d[A-Za-z0-9\/\-.]{2,}[A-Za-z0-9])',
+    # nosologico/nosografico, ricovero, accesso, richiesta, prenotazione, impegnativa...
+    # il valore deve contenere almeno una cifra
+    r'(?i)\b(?:(?:N(?:um(?:ero)?)?\.?|Nr\.?|N°|Cod(?:ice)?\.?|ID)\s*)?(?:nosologico|nosografico|nosol\.?|nos\.|ricovero|'
+    r'episodio|accesso(?:\s*PS)?|verbale(?:\s*PS)?|pratica|richiesta|prenotazione|impegnativa|ricetta|NRE|SDO|'
+    r'campione|provetta|prelievo|accettazione|cartella|fascicolo|registro|posizione|barcode|accession|'
+    r'protocollo|prot\.|documento|doc\.|rif\.|riferimento|ns\.?\s*rif\.?|referto|esame|ordine|'
+    r'prestazione\s*n|lettera|certificato)'
+    r'\s*(?P<mk>(?:n(?:um(?:ero)?)?\.?|nr\.?|n°|nº|#|id|cod(?:ice)?\.?)\s*[:.]?|[:])?\s*'
+    # senza "n." o ":" il valore deve iniziare con una cifra ("protocollo FOLFOX-4" resta)
+    r'(?P<v>(?=[A-Za-z0-9\/\-.]*\d)(?![0-9]{1,2}[\/.][0-9]{1,2}[\/.][0-9]{2,4}\b)(?(mk)[A-Za-z0-9]|\d)[A-Za-z0-9\/\-.]{2,}[A-Za-z0-9])',
+]
+
+# 5-bis. Documenti di identita' (carta d'identita', patente, passaporto, permesso)
+DOCUMENT_PATTERNS = [
+    r"(?i)\b(?:carta\s*d['’]?\s*identit[àa]|C\.\s?I\.|CIE|documento(?:\s*di\s*riconoscimento|\s*d['’]?identit[àa])?|"
+    r"doc\.\s*identit[àa]|patente(?:\s*di\s*guida)?|passaporto|passport|permesso\s*di\s*soggiorno|"
+    r"p\.d\.s\.|carta\s*di\s*soggiorno|titolo\s*di\s*soggiorno)"
+    r"[^\n\d]{0,25}?(?:n(?:um(?:ero)?)?\.?|nr\.?|n°|nº)?\s*[:.]?\s*"
+    r"(?P<v>(?=[A-Za-z0-9 \-]*\d)[A-Za-z0-9]{1,3}[ \-]?[A-Za-z0-9]{3,10}(?:[ \-]?[A-Za-z0-9]{1,4})?)\b",
+    r'\b[A-Z]{2}\d{5}[A-Z]{2}\b',          # CIE: CA12345AB
+    r'\b(?:[A-Z]{2}\d{7}|[A-Z]\d{8})\b(?=[^\n]{0,40}(?i:passaport|patente|document|rilasciat))',
+    r'\b[A-Z]{1,2}\d{7}[A-Z]\b',           # patente: U1A2345678? (formati vari)
 ]
 
 # 6. Provenienza / nazionalita' / reparto di origine
@@ -151,13 +229,20 @@ ORIGIN_PATTERNS = [
 DOCTOR_PATTERNS = [
     r'\b(?i:Dott\.ssa|Dott\.?|Dr\.ssa|Dr\.?|Prof\.ssa|Prof\.?|Dott\.re|Inf\.)\s+(?P<v>' + _CAP_NAME + r')',
     r'(?i)\bFirmato\s*(?:digitalmente)?\s*da[:\s]+(?P<v>[^\n\r,;\t]{3,})',
+    # "Documento firmato digitalmente ai sensi del D.Lgs. 82/2005 da: Mario Rossi"
+    r'(?i)\bfirmat[oa]\s+(?:digitalmente|elettronicamente|con\s+firma\s+digitale)[^\n]{0,90}?\b(?:da|dal|dalla|dal\s+dott\.?|dalla\s+dott\.ssa)[:\s]+(?P<v>[^\n\r,;\t(]{3,})',
+    # "Firmato digitalmente" e il nome sulla riga seguente
+    r'(?i)\bfirmat[oa]\s+digitalmente\s*[:\-]?\s*\n\s*(?:(?:dott\.ssa|dott\.?|dr\.?|prof\.?)\s+)?(?P<v>' + _CAP_NAME_CS + r')',
+    r'(?i)\b(?:Firma(?:\s*digitale)?|Firmatario|Sottoscritto\s*da|Certificato\s*(?:rilasciato\s*)?a|Titolare(?:\s*del\s*certificato)?)\s*(?:di|del|della)?\s*[:]\s*(?P<v>[^\n\r,;\t]{3,})',
+    r'\b(?:CN|cn|GN|SN|givenName|surname|commonName)\s*=\s*(?P<v>[^,;/\n=]{2,60})',
+    r'\b(?:SERIALNUMBER|serialNumber|2\.5\.4\.5)\s*=\s*(?P<v>[A-Z:\-]*[A-Z0-9]{6,})',
     r'(?i)\bSigned\s*by[:\s]+(?P<v>[^\n\r,;\t]{3,})',
     r'(?i)\b(?:Medico|Physician|Doctor|Esaminatore|Refertatore|Dirigente\s*Medico|Médecin|Médico)[:\s]+(?P<v>[^\n\r,;\t]{3,})',
 ]
 
 # 8. Personale sanitario e destinatari
 PERSONNEL_PATTERNS = [
-    r'(?i)\b(?:Richiedente|Richiesto\s*da|Validato\s*da|Compilato\s*da|Eseguito\s*da|Operatore|Utente|Infermiero|Supervisore|Medico\s*Curante|Spett\.le|Spettabile|Alla\s*c\.a\.|C\.a\.|Operator|Requested\s*by|Validated\s*by)[:\s]+(?P<v>[^\n\r,;\t]{2,})',
+    r'(?i)\b(?:Richiedente|Richiesto\s*da|Validato\s*da|Compilato\s*da|Eseguito\s*da|Operatore|Utente|Infermier[aeio]|Ostetrica|Fisioterapista|Logopedista|Tecnico(?:\s*di\s*radiologia)?|TSRM|OSS|Coordinat(?:ore|rice)|Caposala|Assistente\s*sociale|Psicolog[oa]|Dietista|Supervisore|Medico\s*Curante|Spett\.le|Spettabile|Alla\s*c\.a\.|C\.a\.|Operator|Requested\s*by|Validated\s*by)[:\s]+(?P<v>[^\n\r,;\t]{2,})',
 ]
 
 # 9. Strutture sanitarie e branding istituzionale
@@ -183,37 +268,40 @@ HOSPITAL_PATTERNS = [
     r'(?i)\b(?:Ospedale|Hospital|Hopital|Krankenhaus|Policlinico|IRCCS|Azienda\s*Ospedaliera|Azienda\s*Sanitaria|ASL|AUSL|USL|Centre\s*Hospitalier|Medical\s*Center|Fondazione)\s+[A-Za-zÀ-ÖØ-öø-ÿ\']+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ\']+)*',
 ]
 
-# 10. Scansione profonda: date e recapiti isolati
-DEEP_PATTERNS = [
-    r'\b\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}\b',                 # data isolata
-    r'\b(?:\+39[\s\-]?)?3\d{2}[\s\-\.]?\d{3}[\s\-\.]?\d{3,4}\b',  # cellulare italiano isolato
-    r'(?<![\d,.])(?:\+39[\s\-]?)?0\d{1,3}[\s\-/]\d{5,8}\b',        # fisso italiano isolato
-    r'\+\d{2,3}[\s\-]?\d{2,4}[\s\-]?\d{3,4}[\s\-]?\d{3,4}\b',      # numero internazionale
+# 10. Date (tutte: di ricovero, esame, controllo)
+DATE_PATTERNS = [
+    r'(?<![\d/.,])\d{1,2}[\/\-\.]\d{1,2}[\/\-\.](?:19|20)?\d{2}(?![\d/]|\.\d)',  # 12/03/2024, 12.03.24
     r'(?i)\b\d{1,2}°?\s+' + _MONTHS_IT + r'\s+\d{2,4}\b',          # 12 marzo 1985
+    r'(?i)\b' + _MONTHS_IT + r'\s+(?:19|20)\d{2}\b',                 # marzo 2024
     r'(?i)\b' + _MONTHS_EN + r'\s+\d{1,2},?\s+\d{4}\b',            # March 12, 1985
-    r'\b\d{4}-\d{2}-\d{2}\b',                                      # data ISO
+    r'\b(?:19|20)\d{2}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?)?\b',  # data ISO
 ]
 
 # Categoria -> livello minimo di sensibilita' che la attiva.
+# Nessuna scala di sensibilita': ogni categoria e' sempre attiva. Il dizionario
+# resta per compatibilita' con il codice che lo consulta.
 CATEGORY_LEVELS: Dict[str, int] = {
     "Personalizzati": 1,
     "ID ufficiali": 1,
-    "Nome paziente": 2,
-    "Ricorrenze nominativo": 2,
-    "Data di nascita": 3,
-    "Contatti": 4,
-    "Dati bancari": 4,
-    "Identificativi clinici": 5,
-    "Provenienza": 6,
-    "Medici": 7,
-    "Personale sanitario": 8,
-    "Struttura sanitaria": 9,
-    "Scansione profonda": 10,
+    "Nome paziente": 1,
+    "Ricorrenze nominativo": 1,
+    "Data di nascita": 1,
+    "Contatti": 1,
+    "Dati bancari": 1,
+    "Identificativi clinici": 1,
+    "Provenienza": 1,
+    "Medici": 1,
+    "Personale sanitario": 1,
+    "Struttura sanitaria": 1,
+    "Date": 1,
+    "Documenti": 1,
+    "Persone": 1,
 }
 
 _PATTERN_GROUPS: List[Tuple[str, List[str], int]] = [
     ("ID ufficiali", OFFICIAL_ID_PATTERNS, 2),
     ("Nome paziente", PATIENT_LABEL_PATTERNS, 2),
+    ("Persone", PERSON_CONTEXT_PATTERNS, 2),
     ("Data di nascita", DOB_PATTERNS, 2),
     ("Contatti", CONTACT_PATTERNS, 2),
     ("Dati bancari", FINANCIAL_PATTERNS, 8),
@@ -222,7 +310,8 @@ _PATTERN_GROUPS: List[Tuple[str, List[str], int]] = [
     ("Medici", DOCTOR_PATTERNS, 3),
     ("Personale sanitario", PERSONNEL_PATTERNS, 2),
     ("Struttura sanitaria", HOSPITAL_PATTERNS, 3),
-    ("Scansione profonda", DEEP_PATTERNS, 4),
+    ("Date", DATE_PATTERNS, 4),
+    ("Documenti", DOCUMENT_PATTERNS, 5),
 ]
 
 LEVEL_DESCRIPTIONS: Dict[int, str] = {
@@ -252,7 +341,9 @@ CATEGORY_COLORS: Dict[str, Tuple[int, int, int]] = {
     "Medici": (34, 197, 94),
     "Personale sanitario": (16, 185, 129),
     "Struttura sanitaria": (100, 116, 139),
-    "Scansione profonda": (120, 113, 108),
+    "Date": (120, 113, 108),
+    "Documenti": (192, 38, 211),
+    "Persone": (244, 63, 94),
     "Immagini e loghi": (148, 163, 184),
 }
 
@@ -697,7 +788,7 @@ def find_matches(
                     nl = text.find("\n", start, end)
                     if nl != -1:
                         end = nl
-                if category == "Nome paziente" and has_value:
+                if category in ("Nome paziente", "Persone", "Medici", "Personale sanitario") and has_value:
                     end = _trim_name_end(text, v_start, end)
                     if end <= v_start:
                         continue
@@ -727,6 +818,15 @@ def find_matches(
                     if not ok:
                         continue  # sequenza plausibile ma con controllo non valido
                 add(start, end, category, min_len)
+
+    # --- Modello linguistico locale: nomi e indirizzi senza etichetta -----
+    for value, kind in clin_llm.entities(text):
+        category = "Persone" if kind == "PERSONA" else "Contatti"
+        for rx in _target_regexes([value], case_sensitive_short=True):
+            for m in rx.finditer(text):
+                if category == "Persone" and clin_llm.is_eponym_at(text, m.start()):
+                    continue  # "manovra di Giordano": termine clinico, non persona
+                add(m.start(), m.end(), category, 2)
 
     # --- Parole chiave letterali delle strutture sanitarie ---------------
     if level >= CATEGORY_LEVELS["Struttura sanitaria"]:
@@ -760,7 +860,24 @@ _NAME_STOPWORDS = {
 }
 
 _NAME_SOURCES = [re.compile(p) for p in PATIENT_LABEL_PATTERNS]
-_NAME_TOKEN = re.compile(r"[A-Za-zÀ-ÖØ-öø-ÿ'’]+")
+# fonti in cui il contesto basta a dire che il valore e' un nome di persona
+_STRONG_NAME_SOURCES = [re.compile(p) for p in PERSON_CONTEXT_PATTERNS + DOCTOR_PATTERNS]
+# ruoli che seguono spesso il nome nelle firme ("Ivan Petrov - Dirigente Medico")
+_ROLE_WORDS = {"dirigente", "direttore", "direttrice", "responsabile", "primario", "specialista",
+               "specializzando", "specializzanda", "uoc", "uos", "uosd", "u.o.c", "coordinatore",
+               "coordinatrice", "infermiere", "infermiera", "tecnico", "medico", "chirurgo", "in", "presso",
+               # reparti e servizi: "Dirigente Medico UOC Geriatria", "Richiedente: Reparto di ..."
+               "reparto", "servizio", "dipartimento", "distretto", "unita", "unità", "ambulatorio", "pronto",
+               "soccorso", "laboratorio", "struttura", "divisione", "sezione", "centro", "day", "hospital",
+               "cardiologia", "geriatria", "medicina", "chirurgia", "pediatria", "neurologia", "ortopedia",
+               "oncologia", "ematologia", "nefrologia", "pneumologia", "urologia", "ginecologia", "ostetricia",
+               "radiologia", "anestesia", "rianimazione", "psichiatria", "dermatologia", "oculistica",
+               "otorinolaringoiatria", "gastroenterologia", "endocrinologia", "reumatologia", "neonatologia",
+               "infettivologia", "diabetologia", "fisiatria", "riabilitazione", "endoscopia", "dialisi"}
+_TITLE_TOKENS = {"dott", "ssa", "dr", "prof", "sig", "ra", "na", "signor", "signora", "inf", "dottor", "dottoressa"}
+_NAME_TOKEN = re.compile(r"[" + _LETTER + r"'’]+")
+_NAME_PARTICLES = {"lo", "la", "li", "le", "de", "di", "da", "du", "del", "dei", "della", "dello", "dela",
+                   "van", "von", "der", "el", "al", "bin", "ben", "dos", "das"}
 
 
 def collect_names(text: str) -> List[str]:
@@ -772,8 +889,15 @@ def collect_names(text: str) -> List[str]:
     senza etichetta.
     """
     found: List[str] = []
-    for rx in _NAME_SOURCES:
+    for value, kind in clin_llm.entities(text):
+        if kind == "PERSONA":
+            found.append(value)
+            found.extend(t for t in value.split() if len(t) >= 3)
+    sources = [(rx, False) for rx in _NAME_SOURCES] + [(rx, True) for rx in _STRONG_NAME_SOURCES]
+    for rx, strong in sources:
         for m in rx.finditer(text):
+            if "v" not in rx.groupindex or m.group("v") is None:
+                continue
             label = text[m.start():m.start("v")]
             v_start, v_end = _value_bounds(text, *m.span("v"), max_len=60)
             value = text[v_start:v_end]
@@ -781,7 +905,12 @@ def collect_names(text: str) -> List[str]:
             # seguite da due punti o se il valore e' gia' formato da maiuscole.
             tokens: List[str] = []
             for tok in _NAME_TOKEN.findall(value):
-                if tok.lower().strip("'’") in _NAME_STOPWORDS:
+                if not tokens and tok.lower() in _TITLE_TOKENS:
+                    continue  # "Dott. Paolo Neri": il titolo non fa parte del nome
+                if tok.lower() in _NAME_PARTICLES and tok[0].isupper() and tokens:
+                    tokens.append(tok)  # "LO IACONO", "Dela Cruz"
+                    continue
+                if tok.lower().strip("'’") in _NAME_STOPWORDS or tok.lower() in _ROLE_WORDS:
                     break
                 if not tok[0].isupper():
                     break
@@ -790,7 +919,7 @@ def collect_names(text: str) -> List[str]:
                     break
             if not tokens:
                 continue
-            if ":" not in label and not label.strip().lower().startswith(
+            if not strong and ":" not in label and not label.strip().lower().startswith(
                 ("sig", "mr", "mrs", "ms", "mme", "herr", "frau", "il ", "la ")
             ) and not all(t.isupper() for t in tokens):
                 continue
@@ -839,9 +968,17 @@ _SENTENCE_END = re.compile(r"(?<=[^\s.])\.(?=\s+[A-ZÀ-ÖØ-Þ])")
 
 def _trim_name_end(text: str, start: int, end: int) -> int:
     """Chiude il valore di un nominativo prima della prima parola-etichetta."""
+    named = False
     for m in _NAME_TOKEN.finditer(text, start, end):
-        if m.group(0).lower().strip("'’") in _NAME_STOPWORDS:
-            return len(text[:m.start()].rstrip(" \t,;-")) if m.start() > start else start
+        tok = m.group(0)
+        low = tok.lower().strip("'’")
+        if not named and low in _TITLE_TOKENS:
+            continue  # "Dr. Ivan Petrov": il titolo precede il nome
+        if tok.lower() in _NAME_PARTICLES and tok[:1].isupper():
+            continue
+        if low in _NAME_STOPWORDS or low in _ROLE_WORDS:
+            return len(text[:m.start()].rstrip(" \t,;-–")) if named else start
+        named = True
     return end
 
 
@@ -862,8 +999,10 @@ def _target_regexes(targets: Sequence[str], case_sensitive_short: bool = False) 
         if target[-1].isalnum():
             pattern = pattern + r'\b'
         flags = re.IGNORECASE
-        if case_sensitive_short and len(target) <= 4:
-            pattern = "(?:" + pattern + "|" + re.escape(target.upper()) + ")"
+        if case_sensitive_short and (len(target) <= 4 or " " not in target):
+            # "Neri" (cognome) si', "capelli neri" no
+            forms = dict.fromkeys([target, target[:1].upper() + target[1:].lower(), target.upper()])
+            pattern = r"(?<![\w'’])(?:" + "|".join(re.escape(f) for f in forms) + r")(?![\w'’])"
             flags = 0
         try:
             out.append(re.compile(pattern, flags))
@@ -948,20 +1087,19 @@ def analyze_page(
                               derived_targets=derived_targets):
         add(match.start, match.end, match.category, 1)
 
-    # --- Scansione profonda di intestazioni e pie' di pagina --------------
-    if level >= CATEGORY_LEVELS["Scansione profonda"]:
-        rect = page.rect
-        header_limit = max(240.0, rect.height * 0.22)
-        footer_limit = rect.height * 0.88
-        for start, end, line_rect, line_text in index.line_bounds():
-            in_margin = line_rect.y1 <= header_limit or line_rect.y0 >= footer_limit
-            if not in_margin:
-                continue
-            stripped = line_text.strip()
-            if len(stripped) < 4:
-                continue
-            if _PROPER_NAME_LINE.match(stripped) and stripped not in HOSPITAL_KEYWORDS:
-                add(start, end, "Scansione profonda", 4)
+    # --- Righe di sole parole maiuscole in intestazioni e pie' di pagina --
+    rect = page.rect
+    header_limit = max(240.0, rect.height * 0.22)
+    footer_limit = rect.height * 0.88
+    for start, end, line_rect, line_text in index.line_bounds():
+        in_margin = line_rect.y1 <= header_limit or line_rect.y0 >= footer_limit
+        if not in_margin:
+            continue
+        stripped = line_text.strip()
+        if len(stripped) < 4:
+            continue
+        if _PROPER_NAME_LINE.match(stripped) and stripped not in HOSPITAL_KEYWORDS:
+            add(start, end, "Persone", 4)
 
     return detections
 
@@ -1268,7 +1406,8 @@ def _residual_check(
     """
     found: List[str] = []
     try:
-        with fitz.open(str(output_path)) as doc:
+        # i nomi trovati dal modello sono gia' in `derived`: nessuna nuova chiamata
+        with clin_llm.cache_only(), fitz.open(str(output_path)) as doc:
             for page in doc:
                 words = page.get_text("words", clip=fitz.INFINITE_RECT())
                 if not words and clin_ocr.available():
@@ -1305,7 +1444,7 @@ def safe_output_stem(stem: str, level: int, names: Sequence[str] = (),
     spans = [(m.start, m.end) for m in find_matches(
         spaced, max(level, 10), explicit_targets, True, derived_targets=names)
         if m.category in ("ID ufficiali", "Personalizzati", "Ricorrenze nominativo",
-                          "Scansione profonda", "Dati bancari")]
+                          "Date", "Dati bancari", "Persone", "Documenti")]
     if not spans:
         return stem
     merged: List[Tuple[int, int]] = []
@@ -1348,17 +1487,7 @@ def anonymize_single_pdf(
     Compatibilita' storica: anonimizza un file e restituisce il numero di
     redazioni applicate. Solleva `RuntimeError` in caso di errore.
 
-    Scala di sensibilita':
-      1  Bersagli espliciti e ID ufficiali (CF, passaporto, tessera sanitaria)
-      2  Etichette con nominativo del paziente
-      3  Date di nascita ed eta'
-      4  Recapiti (telefono, email, indirizzo) e coordinate bancarie
-      5  Numeri di cartella clinica, nosologici, accettazione
-      6  Provenienza, nazionalita', reparto di origine
-      7  Medici refertatori e firme
-      8  Personale sanitario e destinatari
-      9  Strutture sanitarie e branding istituzionale
-      10 Scansione profonda di intestazioni, pie' di pagina, date isolate
+    Tutte le categorie di dati sono sempre attive.
     """
     res = anonymize_document(
         Path(input_path),

@@ -25,6 +25,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
+import clin_llm
 from anonymize_engine import (
     CATEGORY_LEVELS, FileResult, find_matches, protected_spans, subtract_protected,
 )
@@ -99,7 +100,7 @@ class TableDoc:
 @dataclass
 class TableSettings:
     """Configurazione dell'anonimizzazione tabellare."""
-    level: int = 5
+    level: int = 10
     explicit: List[str] = field(default_factory=list)
     whitelist: List[str] = field(default_factory=list)
     keep_labels: bool = False
@@ -110,6 +111,8 @@ class TableSettings:
     column_modes: Dict[str, Dict[int, str]] = field(default_factory=dict)
     cell_modes: Dict[str, Dict[Tuple[int, int], str]] = field(default_factory=dict)
     row_selection: Dict[str, Optional[Set[int]]] = field(default_factory=dict)
+    # registro pseudonimi condiviso tra file (None: uno nuovo per file)
+    pseudonyms: Optional["_PseudonymBook"] = None
 
     # ---- accessi comodi -------------------------------------------------
     def column_mode(self, sheet: str, col: int) -> str:
@@ -250,20 +253,49 @@ def _cell_to_text(value) -> str:
 # Pianificazione (anteprima)
 # --------------------------------------------------------------------------
 class _PseudonymBook:
-    """Assegna pseudonimi stabili, uno spazio di numerazione per colonna."""
+    """
+    Assegna pseudonimi stabili, uno spazio di numerazione per prefisso (tipo di
+    dato). Condiviso tra i file di un lotto e salvabile su disco: lo stesso
+    paziente riceve lo stesso codice in ogni foglio, cosi' i file restano
+    collegabili per la ricerca.
+    """
 
-    def __init__(self):
-        self._maps: Dict[Tuple[str, int], Dict[str, str]] = {}
+    def __init__(self, maps: Optional[Dict[str, Dict[str, str]]] = None):
+        self._maps: Dict[str, Dict[str, str]] = maps or {}
 
     def get(self, sheet: str, col: int, prefix: str, value: str) -> str:
-        table = self._maps.setdefault((sheet, col), {})
-        key = value.strip().casefold()
+        table = self._maps.setdefault(prefix, {})
+        key = " ".join(value.split()).casefold()
         if key not in table:
             table[key] = f"{prefix}-{len(table) + 1:04d}"
         return table[key]
 
     def count(self) -> int:
         return sum(len(t) for t in self._maps.values())
+
+    @classmethod
+    def load(cls, path: Path) -> "_PseudonymBook":
+        import json
+        try:
+            return cls(json.loads(Path(path).read_text(encoding="utf-8")))
+        except (OSError, ValueError):
+            return cls()
+
+    def save(self, path: Path) -> None:
+        """Scrive la tabella (contiene i valori originali): permessi 600."""
+        import json
+        import os
+        path = Path(path)
+        path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        tmp = path.with_suffix(".tmp")
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            json.dump(self._maps, fh, ensure_ascii=False)
+        os.replace(tmp, path)
+
+
+# prefisso per tipo di dato: "Paziente", "Cognome e nome", "Nominativo" -> PAZ
+_CATEGORY_PREFIX = {"Nome paziente": "PAZ", "ID ufficiali": "ID", "Identificativi clinici": "IDC"}
 
 
 def _prefix_from_header(header: str, col: int) -> str:
@@ -299,15 +331,21 @@ _HEADER_RULES: List[Tuple[re.Pattern, str, str]] = [
 ]
 
 
-def header_rule(header: str, level: int) -> Optional[str]:
-    """Modalita' suggerita per una colonna in base all'intestazione, o None."""
+def header_category(header: str, level: int = 10) -> Optional[Tuple[str, str]]:
+    """(modalita', categoria) suggerite dall'intestazione di colonna, o None."""
     norm = re.sub(r"[\s_\-\.\/:#°]+", " ", (header or "").lower()).strip()
     if not norm:
         return None
     for rx, mode, category in _HEADER_RULES:
         if level >= CATEGORY_LEVELS.get(category, 99) and rx.fullmatch(norm):
-            return mode
+            return mode, category
     return None
+
+
+def header_rule(header: str, level: int) -> Optional[str]:
+    """Modalita' suggerita per una colonna in base all'intestazione, o None."""
+    found = header_category(header, level)
+    return found[0] if found else None
 
 
 def _apply_auto(
@@ -317,8 +355,11 @@ def _apply_auto(
     Applica il rilevamento automatico ad una cella.
     Restituisce (nuovo_valore, categoria) oppure (None, None) se nulla cambia.
     """
-    matches = find_matches(value, settings.level, settings.explicit, settings.keep_labels,
-                           derived_targets=derived)
+    # shortcut: celle senza modello locale (una chiamata per cella sarebbe lenta);
+    # i nominativi arrivano dalle colonne riconosciute. Da rivedere per note lunghe.
+    with clin_llm.cache_only():
+        matches = find_matches(value, settings.level, settings.explicit, settings.keep_labels,
+                               derived_targets=derived)
     if not matches:
         return None, None
     protected = protected_spans(value, settings.whitelist)
@@ -375,12 +416,15 @@ def plan_sheet(
     # Regole dedotte dall'intestazione, solo per colonne senza regola esplicita.
     explicit_cols = settings.column_modes.get(sheet.name, {})
     header_modes: Dict[int, str] = {}
+    header_prefix: Dict[int, str] = {}
     if settings.has_header and settings.default_mode == MODE_AUTO:
         for c, h in enumerate(header):
             if c not in explicit_cols:
-                m = header_rule(h, settings.level)
-                if m:
-                    header_modes[c] = m
+                found = header_category(h, settings.level)
+                if found:
+                    header_modes[c] = found[0]
+                    if found[1] in _CATEGORY_PREFIX:
+                        header_prefix[c] = _CATEGORY_PREFIX[found[1]]
 
     # I nominativi delle colonne identificative vengono cercati anche nelle
     # celle di testo libero (note, diagnosi, anamnesi).
@@ -418,7 +462,7 @@ def plan_sheet(
                                          "Colonna oscurata", mode)
                 continue
             if mode == MODE_PSEUDO:
-                prefix = _prefix_from_header(header[c] if c < len(header) else "", c)
+                prefix = header_prefix.get(c) or _prefix_from_header(header[c] if c < len(header) else "", c)
                 plans[(r, c)] = CellPlan(book.get(sheet.name, c, prefix, value),
                                          "Pseudonimo", mode)
                 continue
@@ -448,7 +492,7 @@ def anonymize_table(
     try:
         doc = load_table(input_path)  # lettura completa
         result.pages = len(doc.sheets)
-        book = _PseudonymBook()
+        book = settings.pseudonyms if settings.pseudonyms is not None else _PseudonymBook()
         all_plans: Dict[str, Dict[Tuple[int, int], CellPlan]] = {}
 
         for sheet in doc.sheets:

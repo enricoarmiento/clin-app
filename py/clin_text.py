@@ -26,7 +26,9 @@ try:
 except ImportError:  # app web (Pyodide): si usa solo l'analisi del testo
     fitz = None
 
+import clin_llm
 import clin_ocr
+
 from anonymize_engine import (
     _PageIndex, collect_document_names, collect_names, find_matches, protected_spans,
     subtract_protected,
@@ -37,7 +39,7 @@ __all__ = [
     "anonymize_text", "anonymize_file", "restore_text",
 ]
 
-DEFAULT_LEVEL = 8          # fino al personale sanitario; date cliniche visibili
+DEFAULT_LEVEL = 10         # nessuna scala: tutte le categorie sono sempre attive
 MAX_FILE_MB = 50
 SUPPORTED_SUFFIXES = ({".pdf", ".txt", ".md", ".csv", ".tsv", ".xlsx", ".xlsm", ".docx"}
                       | clin_ocr.IMAGE_SUFFIXES)
@@ -46,7 +48,7 @@ _PLACEHOLDER = {
     "Personalizzati": "DATO",
     "ID ufficiali": "ID",
     "Nome paziente": "PAZIENTE",
-    "Ricorrenze nominativo": "PAZIENTE",
+    "Ricorrenze nominativo": "PERSONA",
     "Data di nascita": "DATA_NASCITA",
     "Contatti": "CONTATTO",
     "Dati bancari": "IBAN",
@@ -55,8 +57,11 @@ _PLACEHOLDER = {
     "Medici": "MEDICO",
     "Personale sanitario": "OPERATORE",
     "Struttura sanitaria": "STRUTTURA",
-    "Scansione profonda": "DATO",
+    "Date": "DATA",
+    "Documenti": "DOCUMENTO",
+    "Persone": "PERSONA",
 }
+_PERSON_KINDS = {"PAZIENTE", "MEDICO", "OPERATORE", "PERSONA"}
 _PLACEHOLDER_RX = re.compile(r"\[[A-Z_]+_\d+\]")
 
 
@@ -80,24 +85,30 @@ def _norm(value: str) -> str:
 
 
 class _Registry:
-    """Assegna segnaposto stabili; riconduce le parti di un nome alla persona."""
+    """Assegna segnaposto stabili; riconduce le parti di un nome alla persona.
+
+    Il tipo della persona (PAZIENTE, MEDICO, PERSONA...) lo decide la prima
+    occorrenza nel testo; le parti del nome ("Rossi", "Mario") e le sue
+    ricorrenze riprendono lo stesso segnaposto.
+    """
 
     def __init__(self, names: Sequence[str]):
         self.by_value: Dict[Tuple[str, str], str] = {}
         self.mapping: Dict[str, str] = {}
         self.counters: Dict[str, int] = {}
-        self.person_of: Dict[str, str] = {}
+        self.person_of: Dict[str, str] = {}   # nome o parte -> segnaposto
+        self.group_of: Dict[str, str] = {}    # nome o parte -> nominativo completo
         self.add_names(names)
 
     def add_names(self, names: Sequence[str]) -> None:
         """I nominativi completi (piu' parole) definiscono le persone."""
-        for full in sorted({n for n in names if " " in n.strip()}, key=len, reverse=True):
-            if _norm(full) in self.person_of:
+        for full in sorted({n.strip() for n in names if " " in n.strip()}, key=len, reverse=True):
+            key = _norm(full)
+            if key in self.group_of:
                 continue
-            ph = self._new("PAZIENTE", full)
-            for tok in full.split():
-                self.person_of.setdefault(_norm(tok), ph)
-            self.person_of.setdefault(_norm(full), ph)
+            self.group_of[key] = full
+            for tok in key.split():
+                self.group_of.setdefault(tok, full)
 
     @classmethod
     def from_mapping(cls, mapping: Dict[str, str]) -> "_Registry":
@@ -110,10 +121,9 @@ class _Registry:
             reg.mapping[ph] = original
             reg.by_value[(kind, _norm(original))] = ph
             reg.counters[kind] = max(reg.counters.get(kind, 0), int(num))
-            if kind == "PAZIENTE":
-                reg.person_of.setdefault(_norm(original), ph)
-                for tok in _norm(original).split():
-                    reg.person_of.setdefault(tok, ph)
+            if kind in _PERSON_KINDS:
+                for k in [_norm(original)] + _norm(original).split():
+                    reg.person_of.setdefault(k, ph)
         return reg
 
     def _new(self, kind: str, original: str) -> str:
@@ -125,26 +135,26 @@ class _Registry:
 
     def get(self, kind: str, original: str) -> str:
         key = _norm(original)
-        if kind == "PAZIENTE":
-            if key in self.person_of:
-                return self.person_of[key]
-            # "Sig. Rossi" -> si prova con le singole parole
-            for tok in key.split():
-                if tok in self.person_of:
-                    return self.person_of[tok]
+        if kind in _PERSON_KINDS:
+            full = self.group_of.get(key) or next(
+                (self.group_of[t] for t in key.split() if t in self.group_of), None)
+            # "Sig. Rossi", "Rossi Mario": si prova con il nome intero e con le parti
+            for k in [key] + ([_norm(full)] if full else []) + key.split():
+                if k in self.person_of:
+                    return self.person_of[k]
+            ph = self._new(kind, full or original)
+            for k in [key] + key.split() + (_norm(full).split() + [_norm(full)] if full else []):
+                self.person_of.setdefault(k, ph)
+            return ph
         if (kind, key) in self.by_value:
             return self.by_value[(kind, key)]
-        ph = self._new(kind, original)
-        if kind == "PAZIENTE":
-            for tok in key.split():
-                self.person_of.setdefault(tok, ph)
-            self.person_of[key] = ph
-        return ph
+        return self._new(kind, original)
 
 
-def _replace(text: str, registry: _Registry, level: int,
-             explicit: Optional[Sequence[str]], whitelist: Optional[Sequence[str]],
-             names: Sequence[str], counts: Dict[str, int]) -> str:
+def find_spans(text: str, level: int = DEFAULT_LEVEL, explicit: Optional[Sequence[str]] = None,
+               whitelist: Optional[Sequence[str]] = None,
+               names: Sequence[str] = ()) -> List[Tuple[int, int, str]]:
+    """Intervalli (inizio, fine, categoria) che `anonymize_text` sostituisce."""
     matches = find_matches(text, level, explicit, keep_labels=True, derived_targets=names)
     protected = protected_spans(text, whitelist or [])
     spans: List[Tuple[int, int, str]] = []
@@ -158,7 +168,9 @@ def _replace(text: str, registry: _Registry, level: int,
             if e > s:
                 spans.append((s, e, m.category))
     # sovrapposizioni: vince l'intervallo piu' lungo
-    spans.sort(key=lambda t: (t[0], -(t[1] - t[0])))
+    # a parita' d'intervallo vince la categoria piu' specifica (es. Nome paziente su Ricorrenze)
+    generic = ("Ricorrenze nominativo", "Persone", "Personalizzati")
+    spans.sort(key=lambda t: (t[0], -(t[1] - t[0]), t[2] in generic))
     chosen: List[Tuple[int, int, str]] = []
     for s, e, cat in spans:
         if chosen and s < chosen[-1][1]:
@@ -167,7 +179,13 @@ def _replace(text: str, registry: _Registry, level: int,
                 chosen[-1] = (ps, e, pcat)
             continue
         chosen.append((s, e, cat))
+    return chosen
 
+
+def _replace(text: str, registry: _Registry, level: int,
+             explicit: Optional[Sequence[str]], whitelist: Optional[Sequence[str]],
+             names: Sequence[str], counts: Dict[str, int]) -> str:
+    chosen = find_spans(text, level, explicit, whitelist, names)
     out: List[str] = []
     cursor = 0
     for s, e, cat in chosen:
@@ -300,7 +318,8 @@ def anonymize_file(
             use_ocr = clin_ocr.available()
             ocr_pages = {page.number: clin_ocr.ocr_words(page) for page in doc
                          if use_ocr and not page.get_text().strip()}
-            names = collect_document_names(doc, level, whitelist, ocr_pages)
+            with clin_llm.cache_only():  # il modello gira sul testo delle sezioni, sotto
+                names = collect_document_names(doc, level, whitelist, ocr_pages)
             for page in doc:
                 if page.number in ocr_pages:
                     txt = _PageIndex(page, ocr_pages[page.number]).text
@@ -324,6 +343,8 @@ def anonymize_file(
     for _, t in sections:
         names.extend(collect_names(t))
 
+    # `previous`: la numerazione prosegue da letture precedenti, cosi' [PAZIENTE_1]
+    # e' la stessa persona in tutti i file della sessione
     registry = _Registry.from_mapping(previous) if previous else _Registry([])
     registry.add_names(names)
     counts: Dict[str, int] = {}
@@ -350,8 +371,12 @@ def _header_category(header: str, level: int) -> Optional[str]:
     return None
 
 
-def _anonymize_table_file(path: Path, level: int, explicit, whitelist,
-                          previous: Optional[Dict[str, str]] = None) -> TextResult:
+def _anonymize_table_file(path: Path, level: int, explicit, whitelist, previous=None) -> TextResult:
+    with clin_llm.cache_only():  # come in tabular_engine: celle solo con le regole
+        return _anonymize_table_file_rules(path, level, explicit, whitelist, previous)
+
+
+def _anonymize_table_file_rules(path: Path, level: int, explicit, whitelist, previous=None) -> TextResult:
     """
     Fogli di calcolo: le colonne identificative (riconosciute
     dall'intestazione) vengono sostituite per intero; le altre celle passano
@@ -371,6 +396,8 @@ def _anonymize_table_file(path: Path, level: int, explicit, whitelist,
                     v = " ".join(str(row[c]).split())
                     names.append(v)
                     names.extend(t for t in v.split() if len(t) >= 3)
+    # `previous`: la numerazione prosegue da letture precedenti, cosi' [PAZIENTE_1]
+    # e' la stessa persona in tutti i file della sessione
     registry = _Registry.from_mapping(previous) if previous else _Registry([])
     registry.add_names(names)
     counts: Dict[str, int] = {}

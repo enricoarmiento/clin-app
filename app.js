@@ -48,7 +48,7 @@ async function boot() {
   try {
     const { loadPyodide } = await import("./vendor/pyodide/pyodide.mjs");
     const pyodide = await loadPyodide({ indexURL: new URL("vendor/pyodide/", location.href).href });
-    for (const f of ["anonymize_engine.py", "clin_text.py", "tabular_engine.py", "clin_ocr.py", "clin_web.py"]) {
+    for (const f of ["anonymize_engine.py", "clin_text.py", "tabular_engine.py", "clin_ocr.py", "clin_llm.py", "clin_web.py"]) {
       const src = await (await fetch(`py/${f}`, { cache: "no-cache" })).text();
       pyodide.FS.writeFile(f, src);
     }
@@ -65,7 +65,7 @@ async function boot() {
   }
 }
 
-function level() { return Number($("level").value); }
+function level() { return 10; }  // nessuna scala: si rimuove sempre tutto
 
 function apply(resJson) {
   const res = JSON.parse(resJson);

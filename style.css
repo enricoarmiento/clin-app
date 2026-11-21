@@ -60,7 +60,6 @@ textarea {
 textarea:focus, select:focus { outline: 2px solid var(--forest-2); outline-offset: 1px; }
 
 .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 10px; }
-.level { display: flex; align-items: center; gap: 8px; font-size: 14px; color: var(--ink-2); margin-left: auto; }
 select { font: 400 14px var(--sans); color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 999px; padding: 8px 12px; }
 
 button { font-family: var(--sans); }

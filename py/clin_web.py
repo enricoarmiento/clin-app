@@ -5,10 +5,10 @@ Nessuna funzione esegue I/O di rete: il motore lavora solo sul testo ricevuto.
 """
 
 import json
-import re
 from pathlib import Path
 
 from anonymize_engine import collect_names, find_matches
+from clin_ocr import ocr_suspects
 from clin_text import (
     _Registry, _replace, anonymize_file, anonymize_text, restore_text,
 )
@@ -23,25 +23,6 @@ def _out(res):
     return json.dumps({"text": res.text, "mapping": res.mapping, "counts": res.counts,
                        "notes": getattr(res, "notes", []), "summary": res.summary()},
                       ensure_ascii=False)
-
-
-# L'OCR sbaglia qualche carattere ("RSSMRA857T10A562S"): un codice deformato
-# non supera piu' i controlli. Nelle foto si oscura per prudenza ogni sequenza
-# che somiglia a un identificativo.
-_OCR_CODE = re.compile(r"\b[A-Za-z0-9]{10,}\b")
-_OCR_NUMBER = re.compile(r"(?<![\d,.])\+?\d[\d \-./]{5,}\d(?![\d,])")
-
-
-def ocr_suspects(text):
-    out = []
-    for m in _OCR_CODE.finditer(text):
-        tok = m.group(0)
-        if sum(c.isdigit() for c in tok) >= 3 and sum(c.isalpha() for c in tok) >= 3:
-            out.append(tok)
-    for m in _OCR_NUMBER.finditer(text):
-        if sum(c.isdigit() for c in m.group(0)) >= 7:
-            out.append(m.group(0))
-    return out
 
 
 def run_text(text, level, previous_json, ocr=False):

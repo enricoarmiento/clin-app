@@ -32,6 +32,8 @@ try:
 except ImportError:  # app web (Pyodide): si usa solo l'analisi del testo
     fitz = None
 
+import clin_ocr
+
 __all__ = [
     "Detection",
     "FileResult",
@@ -394,14 +396,15 @@ class _PageIndex:
     mantiene la corrispondenza carattere -> rettangolo.
     """
 
-    def __init__(self, page: "fitz.Page"):
+    def __init__(self, page: "fitz.Page", words: Optional[list] = None):
         self.spans: List[_WordSpan] = []
         parts: List[str] = []
         pos = 0
-        try:
-            words = page.get_text("words", sort=True)
-        except Exception:
-            words = page.get_text("words")
+        if words is None:  # parole gia' lette dall'OCR, altrimenti il testo nativo
+            try:
+                words = page.get_text("words", sort=True)
+            except Exception:
+                words = page.get_text("words")
 
         lines: Dict[Tuple[int, int], List[tuple]] = {}
         order: List[Tuple[int, int]] = []
@@ -806,6 +809,7 @@ def collect_document_names(
     doc: "fitz.Document",
     sensitivity_level: int = 5,
     whitelist_words: Optional[Sequence[str]] = None,
+    ocr_pages: Optional[Dict[int, list]] = None,
 ) -> List[str]:
     """Raccoglie i nominativi del paziente da tutte le pagine del documento."""
     if int(sensitivity_level) < CATEGORY_LEVELS["Ricorrenze nominativo"]:
@@ -814,7 +818,8 @@ def collect_document_names(
     names: List[str] = []
     for page in doc:
         try:
-            names.extend(collect_names(_PageIndex(page).text))
+            words = (ocr_pages or {}).get(page.number)
+            names.extend(collect_names(_PageIndex(page, words).text))
         except Exception:
             continue
     uniq = [n for n in dict.fromkeys(names) if n.lower() not in protected]
@@ -906,13 +911,15 @@ def analyze_page(
     whitelist_words: Optional[Sequence[str]] = None,
     keep_labels: bool = False,
     derived_targets: Optional[Sequence[str]] = None,
+    words: Optional[list] = None,
 ) -> List[Detection]:
     """
     Individua (senza modificare nulla) tutti gli elementi sensibili di una
     pagina. Usata sia dal motore di redazione sia dall'anteprima grafica.
+    `words` sostituisce il testo nativo (parole lette dall'OCR).
     """
     level = max(MIN_LEVEL, min(int(sensitivity_level), MAX_LEVEL))
-    index = _PageIndex(page)
+    index = _PageIndex(page, words)
     detections: List[Detection] = []
     if not index.text:
         return detections
@@ -1083,9 +1090,12 @@ def anonymize_document(
     password: str = "",
     should_cancel: Optional[Callable[[], bool]] = None,
     propagate_names: bool = True,
+    ocr: bool = True,
 ) -> FileResult:
     """
-    Anonimizza un PDF restituendo un `FileResult` con statistiche ed avvisi.
+    Anonimizza un PDF (o un'immagine JPG/PNG, salvata come PDF) restituendo
+    un `FileResult` con statistiche ed avvisi. Le pagine senza testo vengono
+    lette con l'OCR, se il modello e' installato, e redatte sui pixel.
     Non solleva eccezioni: gli errori vengono riportati in `result.error`.
     """
     input_path = Path(input_path)
@@ -1094,7 +1104,7 @@ def anonymize_document(
 
     doc = None
     try:
-        doc = fitz.open(str(input_path))
+        doc = clin_ocr.open_as_pdf(input_path)
 
         if doc.is_encrypted:
             if not doc.authenticate(password):
@@ -1106,8 +1116,18 @@ def anonymize_document(
             result.error = "Il documento non contiene pagine."
             return result
 
+        ocr_pages: Dict[int, list] = {}
+        use_ocr = ocr and clin_ocr.available()
+        for page in doc:
+            if not page.get_text().strip():
+                if not use_ocr:
+                    result.pages_without_text.append(page.number + 1)
+                    continue
+                page.remove_rotation()  # coordinate OCR e immagine finale allineate
+                ocr_pages[page.number] = clin_ocr.ocr_words(page)
+
         derived = (
-            collect_document_names(doc, sensitivity_level, whitelist_words)
+            collect_document_names(doc, sensitivity_level, whitelist_words, ocr_pages)
             if propagate_names else []
         )
 
@@ -1115,6 +1135,24 @@ def anonymize_document(
             if should_cancel and should_cancel():
                 result.error = "Operazione annullata."
                 return result
+
+            if page.number in ocr_pages:
+                # scansione: la pagina diventa un'immagine gia' coperta
+                ocr_text = " ".join(w[4] for w in ocr_pages[page.number])
+                detections = analyze_page(
+                    page, sensitivity_level=sensitivity_level,
+                    explicit_targets=list(explicit_targets or []) + clin_ocr.ocr_suspects(ocr_text),
+                    whitelist_words=whitelist_words,
+                    keep_labels=keep_labels, derived_targets=derived,
+                    words=ocr_pages[page.number],
+                )
+                rects = [r for d in detections for r in d.rects
+                         if not (r.is_empty or r.is_infinite)]
+                for det in detections:
+                    result.per_category[det.category] = result.per_category.get(det.category, 0) + 1
+                result.redactions += len(rects)
+                clin_ocr.replace_with_redacted_image(page, rects, fill_color)
+                continue
 
             if remove_images:
                 for info in page.get_image_info():
@@ -1135,9 +1173,6 @@ def anonymize_document(
                 keep_labels=keep_labels,
                 derived_targets=derived,
             )
-
-            if not page.get_text().strip():
-                result.pages_without_text.append(page.number + 1)
 
             for det in detections:
                 for rect in det.rects:
@@ -1167,12 +1202,21 @@ def anonymize_document(
                 "Nessun dato rilevato: verificare il documento o aumentare la sensibilita'."
             )
 
+        if ocr_pages:
+            result.warnings.append(
+                "Pagine lette con OCR e redatte sull'immagine: "
+                f"{', '.join(str(p + 1) for p in sorted(ocr_pages))}. "
+                "L'OCR puo' sbagliare: controllare visivamente."
+            )
+
         if result.pages_without_text:
             pages_str = ", ".join(str(p) for p in result.pages_without_text[:8])
             more = "..." if len(result.pages_without_text) > 8 else ""
             result.warnings.append(
                 f"Pagine senza testo selezionabile (probabile scansione), "
                 f"non analizzabili automaticamente: {pages_str}{more}"
+                + ("" if clin_ocr.available() or not ocr else
+                   " (per leggerle installare l'OCR: python3 scripts/fetch_ocr_model.py)")
             )
 
         result.detected_names = list(derived)
@@ -1226,8 +1270,10 @@ def _residual_check(
     try:
         with fitz.open(str(output_path)) as doc:
             for page in doc:
-                text = "\n".join(" ".join(w[4] for w in line) for line in _group_lines(
-                    page.get_text("words", clip=fitz.INFINITE_RECT())))
+                words = page.get_text("words", clip=fitz.INFINITE_RECT())
+                if not words and clin_ocr.available():
+                    words = clin_ocr.ocr_words(page)  # pagina redatta sui pixel
+                text = "\n".join(" ".join(w[4] for w in line) for line in _group_lines(words))
                 protected = _protected_spans(text, whitelist_words or [])
                 for m in find_matches(text, level, explicit_targets, True,
                                       derived_targets=derived):
@@ -1386,15 +1432,16 @@ def process_batch_files(
             collected.cancelled = True
             break
 
-        out_path = output_dir / f"{src_path.stem}{suffix}{src_path.suffix}"
+        ext = src_path.suffix.lower()
+        out_ext = ".pdf" if ext in clin_ocr.IMAGE_SUFFIXES else src_path.suffix
+        out_path = output_dir / f"{src_path.stem}{suffix}{out_ext}"
         if not overwrite:
             out_path = _unique_path(out_path)
 
-        ext = src_path.suffix.lower()
         if out_path.resolve() == src_path.resolve():
             res = FileResult(input_path=src_path,
                              error="Il file di output coincide con l'input.")
-        elif ext == ".pdf":
+        elif ext == ".pdf" or ext in clin_ocr.IMAGE_SUFFIXES:
             res = anonymize_document(
                 src_path,
                 out_path,
@@ -1427,7 +1474,7 @@ def process_batch_files(
             clean = safe_output_stem(src_path.stem, sensitivity_level,
                                      res.detected_names, explicit_targets)
             if clean != src_path.stem:
-                target = _unique_path(output_dir / f"{clean}{suffix}{src_path.suffix}")
+                target = _unique_path(output_dir / f"{clean}{suffix}{out_ext}")
                 try:
                     res.output_path.rename(target)
                     res.output_path = target

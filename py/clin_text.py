@@ -26,8 +26,9 @@ try:
 except ImportError:  # app web (Pyodide): si usa solo l'analisi del testo
     fitz = None
 
+import clin_ocr
 from anonymize_engine import (
-    collect_document_names, collect_names, find_matches, protected_spans,
+    _PageIndex, collect_document_names, collect_names, find_matches, protected_spans,
     subtract_protected,
 )
 
@@ -38,7 +39,8 @@ __all__ = [
 
 DEFAULT_LEVEL = 8          # fino al personale sanitario; date cliniche visibili
 MAX_FILE_MB = 50
-SUPPORTED_SUFFIXES = {".pdf", ".txt", ".md", ".csv", ".tsv", ".xlsx", ".xlsm", ".docx"}
+SUPPORTED_SUFFIXES = ({".pdf", ".txt", ".md", ".csv", ".tsv", ".xlsx", ".xlsm", ".docx"}
+                      | clin_ocr.IMAGE_SUFFIXES)
 
 _PLACEHOLDER = {
     "Personalizzati": "DATO",
@@ -289,16 +291,27 @@ def anonymize_file(
     notes: List[str] = []
     sections: List[Tuple[str, str]] = []
     names: List[str] = []
+    ocr_extra: List[str] = []   # codici "sospetti" nel testo OCR, oscurati per prudenza
 
-    if ext == ".pdf":
-        with fitz.open(str(p)) as doc:
+    if ext == ".pdf" or ext in clin_ocr.IMAGE_SUFFIXES:
+        with clin_ocr.open_as_pdf(p) as doc:
             if doc.is_encrypted and not doc.authenticate(""):
                 raise ValueError("PDF protetto da password.")
-            names = collect_document_names(doc, level, whitelist)
+            use_ocr = clin_ocr.available()
+            ocr_pages = {page.number: clin_ocr.ocr_words(page) for page in doc
+                         if use_ocr and not page.get_text().strip()}
+            names = collect_document_names(doc, level, whitelist, ocr_pages)
             for page in doc:
-                txt = page.get_text("text", sort=True)
+                if page.number in ocr_pages:
+                    txt = _PageIndex(page, ocr_pages[page.number]).text
+                    ocr_extra.extend(clin_ocr.ocr_suspects(txt))
+                    notes.append(f"Pagina {page.number + 1}: testo letto con OCR, puo' contenere errori.")
+                else:
+                    txt = page.get_text("text", sort=True)
                 if not txt.strip():
-                    notes.append(f"Pagina {page.number + 1}: nessun testo (probabile scansione), esclusa.")
+                    notes.append(f"Pagina {page.number + 1}: nessun testo"
+                                 + ("" if use_ocr else " (probabile scansione; OCR non installato)")
+                                 + ", esclusa.")
                     continue
                 sections.append((f"Pagina {page.number + 1}", txt))
     elif ext == ".docx":
@@ -316,7 +329,8 @@ def anonymize_file(
     counts: Dict[str, int] = {}
     body: List[str] = []
     for title, t in sections:
-        new = _replace(t, registry, level, explicit, whitelist, names, counts)
+        new = _replace(t, registry, level, list(explicit or []) + ocr_extra, whitelist,
+                       names, counts)
         body.append(f"--- {title} ---\n{new.strip()}" if len(sections) > 1 else new.strip())
     return TextResult("\n\n".join(body), dict(registry.mapping), counts, notes)
 

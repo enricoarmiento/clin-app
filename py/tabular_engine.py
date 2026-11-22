@@ -260,14 +260,20 @@ class _PseudonymBook:
     collegabili per la ricerca.
     """
 
-    def __init__(self, maps: Optional[Dict[str, Dict[str, str]]] = None):
+    def __init__(self, maps: Optional[Dict[str, Dict[str, str]]] = None,
+                 originals: Optional[Dict[str, str]] = None):
         self._maps: Dict[str, Dict[str, str]] = maps or {}
+        self.originals: Dict[str, str] = originals or {}  # codice -> valore com'era scritto
 
     def get(self, sheet: str, col: int, prefix: str, value: str) -> str:
         table = self._maps.setdefault(prefix, {})
         key = " ".join(value.split()).casefold()
+        if prefix == "PAZ":
+            # "ROSSI MARIO", "Mario Rossi" e Cognome|Nome separati: stessa persona
+            key = " ".join(sorted(key.split()))
         if key not in table:
             table[key] = f"{prefix}-{len(table) + 1:04d}"
+        self.originals.setdefault(table[key], " ".join(value.split()))
         return table[key]
 
     def count(self) -> int:
@@ -277,9 +283,12 @@ class _PseudonymBook:
     def load(cls, path: Path) -> "_PseudonymBook":
         import json
         try:
-            return cls(json.loads(Path(path).read_text(encoding="utf-8")))
+            data = json.loads(Path(path).read_text(encoding="utf-8"))
         except (OSError, ValueError):
             return cls()
+        if "codici" in data:
+            return cls(data["codici"], data.get("originali", {}))
+        return cls(data)  # formato precedente: solo i codici
 
     def save(self, path: Path) -> None:
         """Scrive la tabella (contiene i valori originali): permessi 600."""
@@ -290,7 +299,7 @@ class _PseudonymBook:
         tmp = path.with_suffix(".tmp")
         fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
         with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            json.dump(self._maps, fh, ensure_ascii=False)
+            json.dump({"codici": self._maps, "originali": self.originals}, fh, ensure_ascii=False)
         os.replace(tmp, path)
 
 
@@ -324,11 +333,20 @@ _HEADER_RULES: List[Tuple[re.Pattern, str, str]] = [
      MODE_PSEUDO, "ID ufficiali"),
     (re.compile(r"(?:data (?:di )?nascita|data nasc|nascita|dob|date of birth|birth ?date|luogo (?:e data )?(?:di )?nascita|luogo nascita|comune (?:di )?nascita)"),
      MODE_ALL, "Data di nascita"),
-    (re.compile(r"(?:tel(?:efono)?|cell(?:ulare)?|phone|mobile|e ?mail|pec|indirizzo|residenza|domicilio|via|address|cap|iban)(?: \w+)?"),
+    (re.compile(r"(?:tel(?:efono)?|cell(?:ulare)?|phone|mobile|e ?mail|pec|indirizzo|residenza|domicilio|via|address|cap|iban)(?: \w+)?"
+                r"|(?:comune|citt[aà]|city|localit[aà]|provincia|prov|regione di residenza|frazione|luogo)"
+                r"(?: (?:di |del |della )?(?:residenza|domicilio|abitazione|provenienza))?"),
      MODE_ALL, "Contatti"),
     (re.compile(r"(?:id paziente|cod(?:ice)? paziente|patient id|mrn|nosologico|n nosologico|cartella(?: clinica)?|n cartella|accettazione|n accettazione)"),
      MODE_PSEUDO, "Identificativi clinici"),
 ]
+
+
+_AGE_HEADER = re.compile(r"(?:eta|età|age|anni|eta anni|età anni|eta all[' ]?\w+|età all[' ]?\w+)")
+
+
+def _norm_header(header: str) -> str:
+    return re.sub(r"[\s_\-\.\/:#°()%]+", " ", (header or "").lower()).strip()
 
 
 def header_category(header: str, level: int = 10) -> Optional[Tuple[str, str]]:
@@ -442,6 +460,10 @@ def plan_sheet(
                     derived.extend(t for t in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ'’]{3,}", full))
         derived = sorted(set(derived), key=len, reverse=True)
 
+    person_cols = [c for c, p in header_prefix.items() if p == "PAZ"]
+    age_cols = {c for c, h in enumerate(header)
+                if c not in explicit_cols and _AGE_HEADER.fullmatch(_norm_header(h))}
+
     for r, row in enumerate(sheet.rows):
         if max_rows is not None and r >= max_rows:
             break
@@ -463,8 +485,18 @@ def plan_sheet(
                 continue
             if mode == MODE_PSEUDO:
                 prefix = header_prefix.get(c) or _prefix_from_header(header[c] if c < len(header) else "", c)
+                if prefix == "PAZ" and len(person_cols) > 1 and c in person_cols:
+                    # Cognome e Nome in colonne separate: un solo codice per la persona
+                    value = " ".join(str(row[k]) for k in person_cols if k < len(row) and row[k] is not None)
                 plans[(r, c)] = CellPlan(book.get(sheet.name, c, prefix, value),
                                          "Pseudonimo", mode)
+                continue
+            if c in age_cols:
+                try:
+                    if float(value.replace(",", ".")) >= 90:
+                        plans[(r, c)] = CellPlan("90+", "Data di nascita", mode)  # eta' molto alta: identifica
+                except ValueError:
+                    pass
                 continue
             new_value, category = _apply_auto(value, settings, derived)
             if new_value is not None:

@@ -5,7 +5,11 @@ Nessuna funzione esegue I/O di rete: il motore lavora solo sul testo ricevuto.
 """
 
 import json
+import os
 from pathlib import Path
+
+# nel browser non ci sono modelli locali (GLiNER/Ollama): solo regole e contesto
+os.environ["CLIN_LLM"] = "0"
 
 from anonymize_engine import collect_names, find_matches
 from clin_ocr import ocr_suspects

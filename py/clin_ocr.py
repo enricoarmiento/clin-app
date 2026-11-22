@@ -23,9 +23,12 @@ from pathlib import Path
 from typing import List, Optional, Sequence, Tuple
 
 try:
-    import fitz  # PyMuPDF
-except ImportError:  # app web: l'OCR la' e' Tesseract.js, qui serve solo ocr_suspects
-    fitz = None
+    import pymupdf as fitz  # PyMuPDF >= 1.24.3; "fitz" e' il nome storico, deprecato
+except ImportError:
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:  # app web: l'OCR la' e' Tesseract.js, qui serve solo ocr_suspects
+        fitz = None
 
 LANGUAGE = "ita"
 OCR_DPI = 300          # lettura: sotto i 300 dpi Tesseract perde le cifre piccole

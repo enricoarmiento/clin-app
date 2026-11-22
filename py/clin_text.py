@@ -22,9 +22,12 @@ from pathlib import Path
 from typing import Dict, List, Optional, Sequence, Tuple
 
 try:
-    import fitz  # PyMuPDF
-except ImportError:  # app web (Pyodide): si usa solo l'analisi del testo
-    fitz = None
+    import pymupdf as fitz  # PyMuPDF >= 1.24.3; "fitz" e' il nome storico, deprecato
+except ImportError:
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:  # app web (Pyodide): si usa solo l'analisi del testo
+        fitz = None
 
 import clin_llm
 import clin_ocr
@@ -98,6 +101,7 @@ class _Registry:
         self.counters: Dict[str, int] = {}
         self.person_of: Dict[str, str] = {}   # nome o parte -> segnaposto
         self.group_of: Dict[str, str] = {}    # nome o parte -> nominativo completo
+        self.isolated: Dict[str, str] = {}    # persone citate solo dal contesto
         self.add_names(names)
 
     def add_names(self, names: Sequence[str]) -> None:
@@ -133,17 +137,32 @@ class _Registry:
         self.by_value[(kind, _norm(original))] = ph
         return ph
 
-    def get(self, kind: str, original: str) -> str:
+    def get(self, kind: str, original: str, link: bool = True) -> str:
+        """`link=False`: persona citata dal contesto ("la moglie Anna"), da non
+        fondere per singola parola con un'altra persona (la paziente Anna Bianchi)."""
         key = _norm(original)
+        if kind in _PERSON_KINDS and not link:
+            # solo corrispondenza esatta; registro a parte, invisibile alle ricerche per parola
+            if key in self.isolated:
+                return self.isolated[key]
+            if key in self.person_of:
+                return self.person_of[key]
+            self.isolated[key] = self._new(kind, original)
+            return self.isolated[key]
         if kind in _PERSON_KINDS:
-            full = self.group_of.get(key) or next(
-                (self.group_of[t] for t in key.split() if t in self.group_of), None)
+            full = (self.group_of.get(key) or next(
+                (self.group_of[t] for t in key.split() if t in self.group_of), None)) if link else None
             # "Sig. Rossi", "Rossi Mario": si prova con il nome intero e con le parti
-            for k in [key] + ([_norm(full)] if full else []) + key.split():
+            for k in [key] + ([_norm(full)] if full else []) + (key.split() if link else []):
                 if k in self.person_of:
                     return self.person_of[k]
+            # "Giulia" dopo "la figlia Giulia Ferri": stesso familiare (mai il contrario)
+            for k in [key] + ([_norm(full)] if full else []):
+                if k in self.isolated:
+                    return self.isolated[k]
             ph = self._new(kind, full or original)
-            for k in [key] + key.split() + (_norm(full).split() + [_norm(full)] if full else []):
+            parts = (key.split() + (_norm(full).split() + [_norm(full)] if full else [])) if link else []
+            for k in [key] + parts:
                 self.person_of.setdefault(k, ph)
             return ph
         if (kind, key) in self.by_value:
@@ -169,8 +188,9 @@ def find_spans(text: str, level: int = DEFAULT_LEVEL, explicit: Optional[Sequenc
                 spans.append((s, e, m.category))
     # sovrapposizioni: vince l'intervallo piu' lungo
     # a parita' d'intervallo vince la categoria piu' specifica (es. Nome paziente su Ricorrenze)
-    generic = ("Ricorrenze nominativo", "Persone", "Personalizzati")
-    spans.sort(key=lambda t: (t[0], -(t[1] - t[0]), t[2] in generic))
+    # il contesto ("la moglie Anna") prevale sulla semplice ricorrenza di un nome
+    rank = {"Persone": 1, "Ricorrenze nominativo": 2, "Personalizzati": 2}
+    spans.sort(key=lambda t: (t[0], -(t[1] - t[0]), rank.get(t[2], 0)))
     chosen: List[Tuple[int, int, str]] = []
     for s, e, cat in spans:
         if chosen and s < chosen[-1][1]:
@@ -197,7 +217,7 @@ def _replace(text: str, registry: _Registry, level: int,
             prefix, original = title.group(0), original[title.end():]
         kind = _PLACEHOLDER.get(cat, "DATO")
         out.append(text[cursor:s])
-        out.append(prefix + registry.get(kind, original))
+        out.append(prefix + registry.get(kind, original, link=cat != "Persone"))
         counts[cat] = counts.get(cat, 0) + 1
         cursor = e
     out.append(text[cursor:])
@@ -371,6 +391,22 @@ def _header_category(header: str, level: int) -> Optional[str]:
     return None
 
 
+def _row_names(row, cats) -> List[str]:
+    """Nominativi della riga: con piu' colonne di nome (Cognome, Nome) uno solo, unito."""
+    vals = [" ".join(str(row[c]).split()) for c, cat in enumerate(cats)
+            if cat == "Nome paziente" and c < len(row) and row[c] not in (None, "")]
+    if len(vals) > 1 and all(len(v.split()) == 1 for v in vals):
+        return [" ".join(vals)]
+    return vals
+
+
+def _is_90_plus(value: str) -> bool:
+    try:
+        return float(value.replace(",", ".")) >= 90
+    except ValueError:
+        return False
+
+
 def _anonymize_table_file(path: Path, level: int, explicit, whitelist, previous=None) -> TextResult:
     with clin_llm.cache_only():  # come in tabular_engine: celle solo con le regole
         return _anonymize_table_file_rules(path, level, explicit, whitelist, previous)
@@ -391,27 +427,34 @@ def _anonymize_table_file_rules(path: Path, level: int, explicit, whitelist, pre
         cats = [_header_category(h, level) for h in header]
         plans.append((sheet, header, cats))
         for row in sheet.rows[1:]:
-            for c, cat in enumerate(cats):
-                if cat == "Nome paziente" and c < len(row) and row[c]:
-                    v = " ".join(str(row[c]).split())
-                    names.append(v)
-                    names.extend(t for t in v.split() if len(t) >= 3)
+            for v in _row_names(row, cats):
+                names.append(v)
+                names.extend(t for t in v.split() if len(t) >= 3)
     # `previous`: la numerazione prosegue da letture precedenti, cosi' [PAZIENTE_1]
     # e' la stessa persona in tutti i file della sessione
     registry = _Registry.from_mapping(previous) if previous else _Registry([])
     registry.add_names(names)
     counts: Dict[str, int] = {}
     body: List[str] = []
+    from tabular_engine import _AGE_HEADER, _norm_header
     for sheet, header, cats in plans:
+        age_cols = {c for c, h in enumerate(header) if _AGE_HEADER.fullmatch(_norm_header(h))}
         lines = ["\t".join(header)]
         for row in sheet.rows[1:]:
             cells = []
+            person = _row_names(row, cats)
             for c, v in enumerate(row):
                 v = "" if v is None else str(v)
                 cat = cats[c] if c < len(cats) else None
-                if v.strip() and cat:
+                if v.strip() and cat == "Nome paziente" and len(person) == 1:
+                    # Cognome e Nome in colonne separate: un solo segnaposto per la persona
+                    cells.append(registry.get("PAZIENTE", person[0]))
+                    counts[cat] = counts.get(cat, 0) + 1
+                elif v.strip() and cat:
                     cells.append(registry.get(_HEADER_KIND.get(cat, "DATO"), v))
                     counts[cat] = counts.get(cat, 0) + 1
+                elif c in age_cols and _is_90_plus(v):
+                    cells.append("90+")  # eta' molto alta: identifica
                 else:
                     cells.append(_replace(v, registry, level, explicit, whitelist, names, counts))
             lines.append("\t".join(cells))

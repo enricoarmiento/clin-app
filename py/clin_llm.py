@@ -95,6 +95,12 @@ def model() -> Optional[str]:
     """Modello locale in uso, o None se il riconoscimento contestuale e' spento."""
     if os.environ.get("CLIN_LLM", "1") == "0" or _base_url() is None:
         return None
+    try:
+        import clin_settings
+        if not clin_settings.load()["modello_locale"]:
+            return None
+    except Exception:
+        pass
     with _lock:
         if _state["checked"]:
             return _state["model"]  # type: ignore[return-value]
@@ -113,8 +119,31 @@ def model() -> Optional[str]:
         return _state["model"]  # type: ignore[return-value]
 
 
+def engine() -> str:
+    """Motore per i nomi senza etichetta: "gliner", "ollama" o "" (solo regole)."""
+    if os.environ.get("CLIN_LLM", "1") == "0":
+        return ""
+    try:
+        import clin_settings
+        s = clin_settings.load()
+        if not s["modello_locale"]:
+            return ""
+        wanted = str(s.get("motore", "auto"))
+    except Exception:
+        wanted = "auto"
+    import clin_ner
+    if wanted in ("auto", "gliner") and clin_ner.installed():
+        return "gliner"
+    if wanted in ("auto", "ollama") and model():
+        return "ollama"
+    return ""
+
+
 def status() -> str:
-    m = model()
+    e = engine()
+    if e == "gliner":
+        return "GLiNER (servizio locale)"
+    m = model() if e == "ollama" else None
     return f"modello locale {m}" if m else f"solo regole: {_state['error'] or 'disattivato'}"
 
 
@@ -167,9 +196,19 @@ def entities(text: str) -> List[Tuple[str, str]]:
         return _cache[key]
     if getattr(_local, "cache_only", False):
         return []
-    m = model()
-    if not m:
+    eng = engine()
+    if not eng:
         return []
+    if eng == "gliner":
+        import clin_ner
+        items = clin_ner.entities(text)
+        if items is not None:
+            result = _verified(items, text)
+            _cache[key] = result
+            return result
+        if not model():          # servizio non disponibile: si ripiega su Ollama, se c'e'
+            return []
+    m = model()
     found: List[Tuple[str, str]] = []
     for chunk in _chunks(text):
         body = {"model": m, "prompt": PROMPT + chunk, "stream": False, "format": SCHEMA,
@@ -181,14 +220,21 @@ def entities(text: str) -> List[Tuple[str, str]]:
         except Exception as exc:
             _state["error"] = f"errore del modello locale ({exc.__class__.__name__})"
             return []  # niente cache: si riprova alla prossima occasione
-        for it in items:
-            value, kind = str(it.get("testo", "")).strip(), it.get("tipo")
-            if kind == "PERSONA":
-                value = plausible_person(value) or ""
-            elif kind == "INDIRIZZO":
-                value = value.strip(" .,;:") if re.search(r"\d", value) and len(value) >= 5 else ""
-            if value and value in text:
-                found.append((value, kind))
+        found += _verified([(str(it.get("testo", "")), it.get("tipo")) for it in items], text)
     result = list(dict.fromkeys(found))
     _cache[key] = result
     return result
+
+
+def _verified(items, text: str) -> List[Tuple[str, str]]:
+    """Le proposte del modello passano gli stessi controlli, qualunque sia il motore."""
+    out = []
+    for value, kind in items:
+        value = value.strip()
+        if kind == "PERSONA":
+            value = plausible_person(value) or ""
+        elif kind == "INDIRIZZO":
+            value = value.strip(" .,;:") if re.search(r"\d", value) and len(value) >= 5 else ""
+        if value and value in text:
+            out.append((value, kind))
+    return list(dict.fromkeys(out))

@@ -28,9 +28,12 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 try:
-    import fitz  # PyMuPDF
-except ImportError:  # app web (Pyodide): si usa solo l'analisi del testo
-    fitz = None
+    import pymupdf as fitz  # PyMuPDF >= 1.24.3; "fitz" e' il nome storico, deprecato
+except ImportError:
+    try:
+        import fitz  # PyMuPDF
+    except ImportError:  # app web (Pyodide): si usa solo l'analisi del testo
+        fitz = None
 
 import clin_ocr
 
@@ -129,6 +132,7 @@ _KIN = (r"(?:moglie|marito|coniuge|figli[oa]|fratello|sorella|madre|padre|mamma|
         r"zi[oa]|cugin[oa]|genero|nuora|suocer[oa]|cognat[oa]|compagn[oa]|convivente|fidanzat[oa]|"
         r"badante|caregiver|tutore|tutrice|amministratore\s+di\s+sostegno|curatore|vicin[oa](?:\s+di\s+casa)?|"
         r"amic[oa]|collega|interprete|mediatore\s+culturale|mediatrice\s+culturale)")
+_KIN_BEFORE = re.compile(r'(?i)\b' + _KIN + r'[ \t]*,?[ \t]*$')
 PERSON_CONTEXT_PATTERNS = [
     r'\b(?i:' + _KIN + r')[ \t]*,?[ \t]+(?:(?i:sig\.?(?:ra|na)?|signor[ae]?)[ \t]+)?(?P<v>' + _CAP_NAME_CS + r')',
     r'\b(?i:discuss[oa]|concordat[oa]|condivis[oa]|parlato|sentit[oa]|contattat[oa]|informat[oa]|'
@@ -802,6 +806,13 @@ def find_matches(
                         if end <= v_start:
                             continue
                 raw = m.group(0)
+                if has_value and category in ("Data di nascita", "Identificativi clinici", "ID ufficiali"):
+                    # date e codici contengono cifre: "Codice fiscale  Data di nascita" in
+                    # un'intestazione di tabella non e' un valore (il luogo di nascita si')
+                    label = text[m.start():v_start].lower()
+                    if not any(ch.isdigit() for ch in text[v_start:end]) and not (
+                            category == "Data di nascita" and re.search(r"luogo|nat[oa]|comune|born", label)):
+                        continue
                 if category == "ID ufficiali" and not has_value and len(raw) == 16:
                     # CF canonico: oscurato comunque; forma omocodica: solo se il
                     # carattere di controllo torna (evita falsi positivi)
@@ -817,6 +828,9 @@ def find_matches(
                         ok = _iban_ok(raw)
                     if not ok:
                         continue  # sequenza plausibile ma con controllo non valido
+                if category == "Nome paziente" and _KIN_BEFORE.search(text, max(0, m.start() - 40), m.start()):
+                    add(start, end, "Persone", min_len)  # "la moglie, sig.ra Bianchi": familiare
+                    continue
                 add(start, end, category, min_len)
 
     # --- Modello linguistico locale: nomi e indirizzi senza etichetta -----

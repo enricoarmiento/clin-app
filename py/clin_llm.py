@@ -60,10 +60,20 @@ _EPONYM_BEFORE = re.compile(
     r"(?i)\b(?:manovra|segno|segni|prova|prove|morbo|malattia|sindrome|scala|score|classificazione|"
     r"criteri|criterio|test|riflesso|punto|triade|legge|metodo|tecnica|intervento|operazione|"
     r"incisione|frattura|ernia|cisti|tumore|linfoma|sarcoma|nodo|fascio|ansa|dotto|canale|"
-    r"tetralogia|anomalia|morbus|disease|sign|syndrome)\s+(?:di|de|del|della|of)?\s*$")
+    r"tetralogia|anomalia|morbus|disease|sign|syndrome|"
+    # altre lingue: "maladie de Parkinson", "ziekte van Parkinson", "enfermedad de", "choroba", "boala"
+    r"maladie|syndrome|signe|man[œo]euvre|test|score|"
+    r"Krankheit|Syndrom|Zeichen|Morbus|Handgriff|"
+    r"enfermedad|s[íi]ndrome|signo|maniobra|escala|"
+    r"doen[çc]a|sinal|manobra|"
+    r"ziekte|syndroom|teken|"
+    r"choroba|zesp[óo][łl]|objaw|"
+    r"boala|sindromul|semnul|manevra|scala)\s+(?:di|de|del|della|of|du|des|van|der|von|da|do|dos)?\s*$")
 # Eponimi e termini che compaiono spesso da soli con la maiuscola.
 _CLINICAL_WORDS = {w.casefold() for w in """
     Lasègue Lasegue Romberg Babinski Mingazzini Giordano Murphy Blumberg Rovsing Parkinson Alzheimer
+    Cushing Addison Graves Basedow Hashimoto Wilson Huntington Raynaud Marfan Turner Down Guillain Barré
+    Kawasaki Wegener Sjögren Behçet Kaposi Burkitt Ewing Wilms Meniere Ménière Bell Horner Tourette
     Crohn Glasgow Valsalva Fontaine Apgar Child Pugh Killip NYHA Wells Gleason Breslow Clark Hodgkin
     Down Turner Marfan Cushing Addison Graves Hashimoto Basedow Raynaud Sjögren Kawasaki Wilson
     Barrett Mallory Weiss Zenker Meckel Hirschsprung Wernicke Korsakoff Guillain Barré Ebstein Fallot
@@ -119,8 +129,22 @@ def model() -> Optional[str]:
         return _state["model"]  # type: ignore[return-value]
 
 
+# Entita' gia' calcolate altrove (GLiNER eseguito nel browser dall'estensione):
+# [(valore, tipo)] per il documento in lavorazione; None se non usate.
+_external: Optional[List[Tuple[str, str]]] = None
+
+
+def set_external(items: Optional[List[Tuple[str, str]]]) -> None:
+    """L'estensione passa i nomi trovati da GLiNER (onnxruntime-web) prima di anonimizzare."""
+    global _external
+    _external = [(str(v), str(t)) for v, t in items] if items is not None else None
+    _cache.clear()
+
+
 def engine() -> str:
     """Motore per i nomi senza etichetta: "gliner", "ollama" o "" (solo regole)."""
+    if _external is not None:
+        return "esterno"
     if os.environ.get("CLIN_LLM", "1") == "0":
         return ""
     try:
@@ -172,18 +196,21 @@ def is_eponym_at(text: str, start: int) -> bool:
     return bool(_EPONYM_BEFORE.search(text[max(0, start - 40):start]))
 
 
+_PARTICLES = {"de", "di", "da", "del", "della", "van", "von", "el", "al", "bin", "ben", "dos", "das", "le", "la",
+              "lo", "der", "den", "ter", "ten", "zu", "du", "des", "do", "y", "e", "het"}
+
+
 def plausible_person(value: str) -> Optional[str]:
     """Ripulisce un nome proposto; None se non sembra il nome di una persona."""
     value = _TITLE.sub("", " ".join(value.split())).strip(" .,;:()[]\"'«»")
     tokens = value.split()
     if not tokens or len(value) < 2 or len(tokens) > 6 or re.search(r"\d", value):
         return None
-    if not all(t[0].isupper() or t.lower() in {"de", "di", "da", "del", "della", "van", "von", "el",
-                                                 "al", "bin", "ben", "dos", "das", "le", "la", "lo"}
+    if not all(t[0].isupper() or t.lower() in _PARTICLES
                for t in tokens):
         return None
-    if all(t.casefold() in _CLINICAL_WORDS for t in tokens):
-        return None
+    if all(t.casefold() in _CLINICAL_WORDS or t.casefold() in _PARTICLES for t in tokens):
+        return None  # "van Cushing" in "syndroom van Cushing"
     return value
 
 
@@ -194,11 +221,15 @@ def entities(text: str) -> List[Tuple[str, str]]:
     key = hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()
     if key in _cache:
         return _cache[key]
-    if getattr(_local, "cache_only", False):
-        return []
     eng = engine()
+    if getattr(_local, "cache_only", False) and eng != "esterno":  # i nomi gia' calcolati restano disponibili
+        return []
     if not eng:
         return []
+    if eng == "esterno":  # solo i valori che compaiono in questo testo, con le stesse verifiche
+        result = _verified([it for it in _external if it[0] and it[0] in text], text)
+        _cache[key] = result
+        return result
     if eng == "gliner":
         import clin_ner
         items = clin_ner.entities(text)

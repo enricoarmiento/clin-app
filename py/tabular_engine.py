@@ -113,6 +113,9 @@ class TableSettings:
     row_selection: Dict[str, Optional[Set[int]]] = field(default_factory=dict)
     # registro pseudonimi condiviso tra file (None: uno nuovo per file)
     pseudonyms: Optional["_PseudonymBook"] = None
+    # registro dei segnaposto (clin_text._Registry): se presente, i dati nelle note e nelle
+    # colonne oscurate diventano [PERSONA_1], [CONTATTO_1]... ripristinabili, invece di ███
+    registry: Optional[object] = None
 
     # ---- accessi comodi -------------------------------------------------
     def column_mode(self, sheet: str, col: int) -> str:
@@ -397,8 +400,25 @@ def header_rule(header: str, level: int) -> Optional[str]:
     return found[0] if found else None
 
 
+def _placeholder(settings: TableSettings, category: str, original: str,
+                 codes: Optional[Dict[str, str]] = None) -> str:
+    """Segnaposto stabile per un dato di una cella; il paziente della riga mantiene il suo PAZ."""
+    from clin_text import _PLACEHOLDER, _norm
+    text = " ".join(original.split())
+    title = re.match(r"(?i)^(dott\.ssa|dott\.?|dr\.ssa|dr\.?|prof\.ssa|prof\.?|sig\.ra|sig\.?)\s+", text)
+    prefix = title.group(0) if title else ""
+    name = text[len(prefix):]
+    if codes and category in ("Ricorrenze nominativo", "Nome paziente", "Personalizzati"):
+        key = _norm(name)
+        code = codes.get(key) or (codes.get(key.split()[-1]) if len(key.split()) == 1 else None)
+        if code:
+            return prefix + code
+    return prefix + settings.registry.get(_PLACEHOLDER.get(category, "DATO"), name, link=category != "Persone")
+
+
 def _apply_auto(
     value: str, settings: TableSettings, derived: Optional[Sequence[str]] = None,
+    codes: Optional[Dict[str, str]] = None,
 ) -> Tuple[Optional[str], Optional[str]]:
     """
     Applica il rilevamento automatico ad una cella.
@@ -422,7 +442,7 @@ def _apply_auto(
     if not spans:
         return None, None
 
-    order = sorted(range(len(spans)), key=lambda i: spans[i][0])
+    order = sorted(range(len(spans)), key=lambda i: (spans[i][0], -(spans[i][1] - spans[i][0])))
     merged: List[Tuple[int, int]] = []
     used_categories: List[str] = []
     for i in order:
@@ -435,9 +455,14 @@ def _apply_auto(
 
     out: List[str] = []
     cursor = 0
-    for s, e in merged:
+    for (s, e), cat in zip(merged, used_categories):
+        while s < e and value[s] in " \t\n,;:.()":  # niente spazi o punteggiatura nel segnaposto
+            s += 1
+        while e > s and value[e - 1] in " \t\n,;:()":
+            e -= 1
         out.append(value[cursor:s])
-        out.append(_mask_for(value[s:e], settings.mask))
+        out.append(_placeholder(settings, cat, value[s:e], codes) if settings.registry is not None
+                   else _mask_for(value[s:e], settings.mask))
         cursor = e
     out.append(value[cursor:])
     new_value = "".join(out)
@@ -466,12 +491,14 @@ def plan_sheet(
     explicit_cols = settings.column_modes.get(sheet.name, {})
     header_modes: Dict[int, str] = {}
     header_prefix: Dict[int, str] = {}
+    header_cats: Dict[int, str] = {}
     if settings.has_header and settings.default_mode == MODE_AUTO:
         for c, h in enumerate(header):
             if c not in explicit_cols:
                 found = header_category(h, settings.level)
                 if found:
                     header_modes[c] = found[0]
+                    header_cats[c] = found[1]
                     if found[1] in _CATEGORY_PREFIX:
                         header_prefix[c] = _CATEGORY_PREFIX[found[1]]
 
@@ -488,7 +515,8 @@ def plan_sheet(
                     full = " ".join(str(row[c]).split())
                     if len(full) >= 3:
                         derived.append(full)
-                    derived.extend(t for t in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ'’]{3,}", full))
+                    derived.extend(t for t in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ'’]{3,}", full)
+                                   if t.casefold() not in clin_llm._PARTICLES)
         derived = sorted(set(derived), key=len, reverse=True)
 
     # colonne di nominativi senza intestazione nota: decise dal contenuto
@@ -512,6 +540,22 @@ def plan_sheet(
     sheet.detected = list(derived)  # per ripulire anche il nome del file
 
     person_cols = [c for c, p in header_prefix.items() if p == "PAZ"]
+    # nome del paziente -> suo PAZ: nelle note «Rossi chiede…» diventa «PAZ-0001 chiede…»
+    codes: Dict[str, str] = {}
+    if settings.registry is not None and person_cols:
+        from clin_text import _norm
+        seen_tok: Dict[str, Optional[str]] = {}
+        for row in sheet.rows[first_data_row:]:
+            full = " ".join(str(row[k]) for k in person_cols if k < len(row) and row[k] is not None)
+            if not full.strip():
+                continue
+            code = book.get(sheet.name, person_cols[0], "PAZ", full)
+            codes[_norm(full)] = code
+            codes[_norm(" ".join(reversed(full.split())))] = code
+            for tok in _norm(full).split():
+                if len(tok) >= 3:
+                    seen_tok[tok] = code if seen_tok.get(tok, code) == code else None
+        codes.update({t: c for t, c in seen_tok.items() if c})
     age_cols = {c for c, h in enumerate(header)
                 if c not in explicit_cols and _AGE_HEADER.fullmatch(_norm_header(h))}
 
@@ -531,8 +575,11 @@ def plan_sheet(
             if mode == MODE_KEEP:
                 continue
             if mode == MODE_ALL:
-                plans[(r, c)] = CellPlan(_mask_for(value, settings.mask),
-                                         "Colonna oscurata", mode)
+                if settings.registry is not None:
+                    plans[(r, c)] = CellPlan(_placeholder(settings, header_cats.get(c, "Contatti"), value),
+                                             "Colonna oscurata", mode)
+                else:
+                    plans[(r, c)] = CellPlan(_mask_for(value, settings.mask), "Colonna oscurata", mode)
                 continue
             if mode == MODE_PSEUDO:
                 prefix = header_prefix.get(c) or _prefix_from_header(header[c] if c < len(header) else "", c)
@@ -549,7 +596,7 @@ def plan_sheet(
                 except ValueError:
                     pass
                 continue
-            new_value, category = _apply_auto(value, settings, derived)
+            new_value, category = _apply_auto(value, settings, derived, codes)
             if new_value is not None:
                 plans[(r, c)] = CellPlan(new_value, category or "Personalizzati", mode)
 

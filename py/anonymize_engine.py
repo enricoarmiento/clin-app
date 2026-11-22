@@ -79,8 +79,9 @@ _UP = "A-ZÀ-ÖØ-ÞĀĂĄĆĈĊČĎĐĒĔĖĘĚĜĞĠĢĤĦĨĪĬĮİĴĶĹĻĽ
 _LETTER = "A-Za-zÀ-ÖØ-öø-ɏȘșȚțḀ-ỿ"
 _CAP_WORD = r"[" + _UP + r"][" + _LETTER + r"'’]+"
 # particelle dei cognomi ("Lo Iacono", "De Luca", "Dela Cruz", "El Amrani", "van der Berg")
-_PARTICLE = r"(?:[Dd][aeiu]|[Dd]e[il]|[Dd]ell[ao']|[Dd]ela|[Ll][aeio]|[Vv][ao]n|[Dd]er|[Ee]l|[Aa]l|[Bb]in|[Bb]en|[Dd]os|[Dd]as)"
-_CAP_NAME = _CAP_WORD + r"(?:[ \t]+(?:" + _PARTICLE + r"[ \t]+)?" + _CAP_WORD + r"){0,3}"
+_PARTICLE = (r"(?:[Dd][aeiu]|[Dd]e[ilns]|[Dd]ell[ao']|[Dd]ela|[Ll][aeio]|[Vv][ao]n|[Dd]e[rn]|[Tt]e[rn]|[Zz]u|[Ee]l|[Aa]l|"
+             r"[Bb]in|[Bb]en|[Dd]os|[Dd]as|[Dd]o|[Yy]|[Ee])")
+_CAP_NAME = _CAP_WORD + r"(?:[ \t]+(?:" + _PARTICLE + r"[ \t]+){0,2}" + _CAP_WORD + r"){0,3}"
 _CAP_NAME_CS = r"(?-i:" + _CAP_NAME + r")"
 
 # Nome di via: parole maiuscole, particelle minuscole ("dei", "della"), numeri
@@ -100,6 +101,15 @@ _CIVICO = r"(?:,?[ \t]*(?:n\.?[ \t]*|n°[ \t]*)?\d{1,4}(?:[ \t]*/?[ \t]*[A-Za-z]
 
 _MONTHS_IT = r"(?:gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre|genn?\.?|febb?r?\.?|mar\.?|apr\.?|magg?\.?|giu\.?|lug\.?|ago\.?|sett?\.?|ott\.?|nov\.?|dic\.?)"
 _MONTHS_EN = r"(?:january|february|march|april|may|june|july|august|september|october|november|december)"
+_MONTHS_EU = (r"(?:january|february|march|april|may|june|july|august|september|october|november|december|"
+              r"janvier|f[ée]vrier|mars|avril|mai|juin|juillet|ao[ûu]t|septembre|octobre|novembre|d[ée]cembre|"
+              r"januar|j[äa]nner|februar|m[äa]rz|april|juni|juli|oktober|dezember|"
+              r"enero|febrero|marzo|abril|mayo|junio|julio|agosto|sep?tiembre|octubre|noviembre|diciembre|"
+              r"janeiro|fevereiro|mar[çc]o|maio|junho|julho|setembro|outubro|novembro|dezembro|"
+              r"januari|februari|maart|mei|augustus|"
+              r"stycznia|lutego|marca|kwietnia|maja|czerwca|lipca|sierpnia|wrze[śs]nia|pa[źz]dziernika|listopada|grudnia|"
+              r"stycze[ńn]|luty|marzec|kwiecie[ńn]|czerwiec|lipiec|sierpie[ńn]|wrzesie[ńn]|pa[źz]dziernik|listopad|grudzie[ńn]|"
+              r"ianuarie|februarie|martie|aprilie|iunie|iulie|septembrie|octombrie|noiembrie|decembrie)")
 
 # 1. Identificativi ufficiali (CF italiano, passaporti, SSN, STP, ENI)
 OFFICIAL_ID_PATTERNS = [
@@ -109,12 +119,24 @@ OFFICIAL_ID_PATTERNS = [
     r'(?i)\b(?:STP|ENI)[\s\-]?(?P<v>\d{3}[\s\-]?\d{3}[\s\-]?\d{7,10})\b',
     r'(?i)\b(?:Passaporto|Passport|STP|ENI|NIE|DNI|SSN)[:\s]+(?P<v>[A-Za-z0-9\-\/]{5,})\b',
     r'(?i)\b(?:Tessera\s*Sanitaria|Tessera\s*San\.?|Health\s*Card|TEAM)[:\s]*(?:n\.?|nr\.?|n°)?[:\s]*(?P<v>[0-9A-Za-z\-\/]{5,})',
+    # identificativi nazionali con etichetta (EN, FR, DE, ES, PT, NL, PL, RO): il valore contiene cifre,
+    # spazi singoli ammessi ("465 587 4050"), si ferma prima di due spazi o della parola successiva
+    r'(?i)\b(?:NHS\s*(?:number|no\.?|n[°º])|CHI\s*number|Social\s*security\s*(?:number|no\.?)|National\s*insurance\s*(?:number|no\.?)|NINO|'
+    r'(?:num[ée]ro\s*de\s*|n[°º]\s*(?:de\s*)?)?s[ée]curit[ée]\s*sociale|NIR|INSEE|'
+    r'(?:Kranken)?versicherten(?:nummer|-?nr\.?)|KV-?Nr\.?|Versicherungsnummer|Sozialversicherungsnummer|SV-?Nr\.?|Steuer-?ID|'
+    r'NUSS|NIF|NIE|TIS|CIP|(?:n[úu]mero\s*de\s*)?(?:la\s*)?seguridad\s*social|'
+    r'n[ºo°]?\s*(?:de\s*)?utente|n[úu]mero\s*de\s*utente|NISS|cart[ãa]o\s*de\s*cidad[ãa]o|'
+    r'BSN|burgerservicenummer|PESEL|NIP|CNP|cod\s*numeric\s*personal|SSN|AHV-?Nr\.?|AVS)'
+    r'\s*(?:n(?:o|r|°|º)?\.?|number|nummer|n[úu]mero|numer)?\s*[:#]?\s*'
+    r'(?P<v>(?-i:(?=[A-Z0-9 \-]*\d)[A-Z0-9](?:[A-Z0-9\-]|[ ](?=[A-Z0-9]))*[A-Z0-9]))',
+    r'\b[12][ ]?\d{2}[ ]?(?:0[1-9]|1[0-2]|[2-9]\d)[ ]?(?:\d{2}|2A|2B)[ ]?\d{3}[ ]?\d{3}[ ]?\d{2}\b',  # NIR francese
 ]
 
 # 2. Etichette con nominativo del paziente (IT, EN, FR, ES, DE)
 PATIENT_LABEL_PATTERNS = [
-    r'(?i)\b(?:Paziente|Patient|Nominativo|Assistito|Cognome\s*e?\s*Nome|Nome\s*e?\s*Cognome|Patient\s*Name|Nom\s*et\s*prénom|Nombre\s*y\s*apellido)\s*[:]\s*(?P<v>[A-Za-zÀ-ÖØ-öø-ɏȘșȚțḀ-ỿ\s\'\-]{2,})',
-    r'(?i)\b(?:Paziente|Patient|Nominativo|Assistito|Cognome\s*e?\s*Nome|Nome\s*e?\s*Cognome|Patient\s*Name|Nom\s*et\s*prénom|Nombre\s*y\s*apellido)\s+(?P<v>' + _CAP_NAME_CS + r')',
+    r'(?i)\b(?:Paziente|Patient|Nominativo|Assistito|Cognome\s*e?\s*Nome|Nome\s*e?\s*Cognome|Patient\s*Name|Nom\s*et\s*prénom|Nombre\s*y\s*apellido|Name\s*of\s*patient|Nom\s*du\s*patient|Nom\s*de\s*la\s*patiente|Patient(?:e)?|Name\s*des\s*Patienten|Name\s*der\s*Patientin|Patientenname|Nombre\s*del\s*paciente|Paciente|Nome\s*do\s*(?:doente|utente|paciente)|Doente|Utente|Naam\s*pati[ëe]nt|Pati[ëe]ntnaam|Pati[ëe]nt|Imi[ęe]\s*i\s*nazwisko(?:\s*pacjent(?:a|ki))?|Pacjent(?:ka)?|Numele\s*(?:[șs]i\s*prenumele\s*)?pacientului|Pacient(?:a|ul)?)\s*[:]\s*(?P<v>[A-Za-zÀ-ÖØ-öø-ɏȘșȚțḀ-ỿ\s\'\-]{2,})',
+    # senza due punti solo le etichette italiane: "Patient Education Material" non e' un nome
+    r'(?i)\b(?:Paziente|Nominativo|Assistito|Cognome\s*e?\s*Nome|Nome\s*e?\s*Cognome|Patient\s*Name|Nom\s*et\s*prénom|Nombre\s*y\s*apellido)\s+(?P<v>' + _CAP_NAME_CS + r')',
     r'(?i)\b(?:Cognome|Surname|Nom|Apellido|Nachname)\s*[:]\s*(?P<v>[A-Za-zÀ-ÖØ-öø-ɏȘșȚțḀ-ỿ\s\'\-]{2,})',
     r'(?i)\b(?:Cognome|Surname|Nom|Apellido|Nachname)\s+(?P<v>' + _CAP_NAME_CS + r')',
     r'(?i)\b(?:Nome|First\s*name|Prénom|Nombre|Vorname)\s*[:]\s*(?P<v>[A-Za-zÀ-ÖØ-öø-ɏȘșȚțḀ-ỿ\s\'\-]{2,})',
@@ -132,7 +154,17 @@ _KIN = (r"(?:moglie|marito|coniuge|figli[oa]|fratello|sorella|madre|padre|mamma|
         r"zi[oa]|cugin[oa]|genero|nuora|suocer[oa]|cognat[oa]|compagn[oa]|convivente|fidanzat[oa]|"
         r"badante|caregiver|tutore|tutrice|amministratore\s+di\s+sostegno|curatore|vicin[oa](?:\s+di\s+casa)?|"
         r"amic[oa]|collega|interprete|mediatore\s+culturale|mediatrice\s+culturale)")
-_KIN_BEFORE = re.compile(r'(?i)\b' + _KIN + r'[ \t]*,?[ \t]*$')
+# Parentela in altre lingue: serve solo a riconoscere come familiare un nome gia' trovato (GLiNER).
+# Non trova nomi da sola: in tedesco ogni sostantivo ha la maiuscola ("die Tochter Begleitung").
+_KIN_EU = (r"(?:wife|husband|spouse|partner|daughter|son|mother|father|sister|brother|niece|nephew|carer|next\s+of\s+kin|"
+           r"[ée]pouse|mari|conjoint|fille|fils|m[èe]re|p[èe]re|s[œo]eur|fr[èe]re|ni[èe]ce|neveu|personne\s+de\s+confiance|"
+           r"Ehefrau|Ehemann|Frau|Mann|Tochter|Sohn|Mutter|Vater|Schwester|Bruder|Enkel(?:in)?|Betreuer(?:in)?|"
+           r"esposa|marido|hij[oa]|madre|padre|herman[oa]|sobrin[oa]|nieto|nieta|cuidador[a]?|"
+           r"mulher|filh[oa]|m[ãa]e|pai|irm[ãa]o?|"
+           r"echtgeno(?:te|ot)|vrouw|man|dochter|zoon|moeder|vader|zus|broer|"
+           r"[żz]ona|m[ąa][żz]|c[óo]rka|syn|matka|ojciec|siostra|brat|opiekun(?:ka)?|"
+           r"so[țt]ia|so[țt]ul|fiica|fiul|mama|tat[ăa]l|sora|fratele)")
+_KIN_BEFORE = re.compile(r'(?i)\b(?:' + _KIN + r'|' + _KIN_EU + r')(?:[ \t]+(?:sa|sua|su|seine|ihre|her|his|their))?[ \t]*,?[ \t]*$')
 PERSON_CONTEXT_PATTERNS = [
     r'\b(?i:' + _KIN + r')[ \t]*,?[ \t]+(?:(?i:sig\.?(?:ra|na)?|signor[ae]?)[ \t]+)?(?P<v>' + _CAP_NAME_CS + r')',
     r'\b(?i:discuss[oa]|concordat[oa]|condivis[oa]|parlato|sentit[oa]|contattat[oa]|informat[oa]|'
@@ -142,8 +174,8 @@ PERSON_CONTEXT_PATTERNS = [
 
 # 3. Date di nascita e dati anagrafici
 DOB_PATTERNS = [
-    r'(?i)\b(?:Data\s*(?:di)?\s*Nascita|Data\s*Nasc\.?|D\.?N\.?|Nascita|Luogo\s*e\s*Data\s*di\s*Nascita|Date\s*of\s*Birth|DOB|Birth\s*Date|Date\s*de\s*naissance|Fecha\s*de\s*nacimiento|Geburtsdatum)[:\s]+(?P<v>[^\n\r,;\t]{2,})',
-    r'(?i)\b(?:Nato\/a|Nato|Nata|Né\(e\)|Né|Née|Nacido\/a|Geboren)(?:\s*il|\s*le|\s*el|\s*am)?[:\s]+(?P<v>[^\n\r,;\t]{2,})',
+    r'(?i)\b(?:Data\s*(?:di)?\s*Nascita|Data\s*Nasc\.?|D\.?N\.?|Nascita|Luogo\s*e\s*Data\s*di\s*Nascita|Date\s*of\s*Birth|DOB|D\.O\.B\.?|Birth\s*Date|Date\s*de\s*naissance|Fecha\s*de\s*nacimiento|Geburtsdatum|Geb\.-?Datum|Data\s*de\s*nascimento|Geboortedatum|Data\s*urodzenia|Data\s*na[șs]terii)[:\s]+(?P<v>[^\n\r,;\t]{2,})',
+    r'(?i)\b(?:Nato\/a|Nato|Nata|Né\(e\)|Né|Née|Nacido\/a|Nacida|Nacido|Geboren|geb\.|Born|Nascid[oa]|Geboren\s*op|Urodzon[ya]|N[ăa]scut[ăa]?)(?:\s*il|\s*le|\s*el|\s*am|\s*on|\s*em|\s*a|\s*la|\s*dnia)?[:\s]+(?P<v>[^\n\r,;\t]{2,})',
     r'(?i)\b(?:Et[àa]|Age|Anni)[:\s]+(?P<v>\d{1,3}(?![.,]\d)\s*(?:anni|aa|mesi|y|yrs)?)\b',
     # eta' in prosa ("di 45 anni", "di 5 mesi"); le durate ("da 3 giorni") restano visibili
     r'(?i)\bdi\s+(?P<v>\d{1,3}\s+(?:anni|mesi))\b(?!\s+(?:di|da|fa|prima|dopo|dal|dalla|dall)\b|\s+(?:terapia|trattamento|follow|distanza|durata))',
@@ -153,7 +185,11 @@ DOB_PATTERNS = [
 # 4. Recapiti (telefono, email, indirizzo)
 CONTACT_PATTERNS = [
     r'\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b',  # Email
-    r'(?i)\b(?:Tel\.?|Telefono|Phone|Cell\.?|Cellulare|Mobile|Fax|Recapito)[:\s]+(?P<v>[0-9\+\s\-\(\)\/]{5,})',
+    r'(?i)\b(?:Tel\.?|Telefono|Phone|Cell\.?|Cellulare|Mobile|Fax|Recapito|T[ée]l\.?|T[ée]l[ée]phone|Portable|Handy|'
+    r'Telefon|Tel[ée]fono|M[óo]vil|Telem[óo]vel|Mobiel|Telefoon|Tel\.\s*kom\.?|Kom[óo]rka|Mobil|Telefonnummer)[:\s]+(?P<v>[0-9\+\s\-\(\)\/]{5,})',
+    r'(?<![\d,./])0[1-9](?:[ .]\d{2}){4}(?![\d])',                       # Francia: 06 12 34 56 78
+    r'(?<![\d,./])[6-9]\d{2}[ .]\d{3}[ .]\d{3}(?![\d])',                 # Spagna, Portogallo: 612 345 678
+    r'(?<![\d,./])0[1-9]\d?-\d{6,8}(?![\d])',                             # Paesi Bassi: 06-12345678
     # "Via", "Piazza" non sono etichette: "per via orale" non e' un indirizzo
     r'(?i)\b(?:Residenza|Residente|Indirizzo|Domicilio|Domiciliat[oa]|Address|Adresse)\s*[:]\s*(?P<v>[^\n\r;\t]{2,})',
     r'(?i)\b(?:Residenza|Indirizzo|Domicilio|Address)[ \t]+(?=[A-ZÀ-Ö0-9])(?-i:(?P<v>[A-ZÀ-Ö0-9][^\n\r;\t]{2,}))',
@@ -168,6 +204,22 @@ CONTACT_PATTERNS = [
     r'(?i)\b(?:via|viale|piazza|corso|largo|vicolo|strada|contrada|v\.le|p\.zza)[ \t]+' + _NOT_STREET
     + r'[a-zà-ùA-ZÀ-Ö\'][a-zà-ùA-ZÀ-Ö\']*(?:[ \t]+[a-zà-ùA-ZÀ-Ö\']+){0,3}[ \t]+\d{1,4}[a-z]?\b'
     + r'(?![ \t]*(?:cp|cpr|compress|mg|g|ml|gtt|gocce|fl|fiale|volte|x|ui|mcg|/))',
+    # indirizzi in altre lingue: "12 Baker Street", "15 rue de la Paix", "Hauptstraße 5",
+    # "Calle Mayor 10", "Rua Augusta 100", "Kerkstraat 12", "ul. Marszałkowska 10", "Strada Victoriei 25"
+    r'\b\d{1,4}[a-zA-Z]?,?[ \t]+(?:[A-Z][a-z\'’]+[ \t]+){1,3}(?:Street|St\.|Road|Rd\.|Avenue|Ave\.|Lane|Drive|Close|Way|Place|Square|Court|Crescent|Terrace|Gardens)\b',
+    r'\b\d{1,4}(?:[ \t]*(?:bis|ter))?,?[ \t]+(?i:rue|avenue|boulevard|bd|all[ée]e|chemin|impasse|place|quai|route|cours)[ \t]+(?:(?:de|du|des|la|le|l[\'’])[ \t]*)*[A-ZÀ-Ö][\w\'’\-]+(?:[ \t]+[A-ZÀ-Ö\w][\w\'’\-]*){0,3}',
+    r'\b[A-ZÄÖÜ][a-zäöüß]+(?:stra(?:ß|ss)e|str\.|weg|gasse|allee|platz|ring|damm|ufer)[ \t]+\d{1,4}[a-z]?\b',
+    r'\b(?:[A-ZÄÖÜ][a-zäöüß]+[ \-])(?:Stra(?:ß|ss)e|Weg|Gasse|Allee|Platz)[ \t]+\d{1,4}[a-z]?\b',
+    r'\b(?:Calle|C/|Avenida|Avda\.?|Plaza|Paseo|Camino|Carrer|Rua|Avenida|Travessa|Largo|Praça|Estrada|'
+    r'Strada|Str\.|Bulevardul|Bd\.|Calea|Șoseaua|Soseaua|Piața|ul\.|ulica|al\.|aleja|pl\.|plac|os\.)[ \t]+'
+    r'(?:(?:de|del|da|do|dos|das|la|las|los)[ \t]+)*[A-ZÀ-ÖĄĆĘŁŃÓŚŹŻȘȚ][\w\'’\-]+(?:[ \t]+[A-ZÀ-ÖĄĆĘŁŃÓŚŹŻȘȚ\w][\w\'’\-]*){0,3},?[ \t]*(?:n[º°.]?[ \t]*)?\d{1,4}[A-Za-z]?\b',
+    r'\b[A-Z][a-z]+(?:straat|laan|weg|plein|gracht|kade|singel|dijk)[ \t]+\d{1,4}[a-zA-Z]?\b',
+    # codici postali con citta': "NW1 6XE", "1017 GB Amsterdam", "00-026 Warszawa", "1100-053 Lisboa", "010063 București"
+    r'\b[A-Z]{1,2}\d[A-Z\d]?[ \t]\d[A-Z]{2}\b',
+    r'\b\d{4}[ \t]?[A-Z]{2}[ \t]+[A-Z][a-z]+\b',
+    r'(?<![\d\-])\b\d{2}-\d{3}[ \t]+[A-ZĄĆĘŁŃÓŚŹŻ][a-ząćęłńóśźż]+\b',
+    r'(?<![\d\-])\b\d{4}-\d{3}[ \t]+[A-ZÀ-Ö][a-zà-ö]+\b',
+    r'(?<![\d])\b\d{6}[ \t]+(?-i:[A-ZĂÂÎȘȚ][a-zăâîșț]+)\b',
     # CAP seguito dal comune: "00185 Roma", "20121 Milano (MI)"
     r'(?<![\d.,/])\b\d{5}[ \t]+(?-i:[A-ZÀ-Ö][a-zà-öø-ÿ\']+(?:[ \t]+(?:[A-ZÀ-Ö][a-zà-öø-ÿ\']+|di|del|sul|in|d\'))*)(?:[ \t]*\(?[A-Z]{2}\)?(?![A-Za-z]))?',
     # "residente a Roma", "domiciliata in Via ..." (la via e' coperta dal pattern sopra)
@@ -193,6 +245,15 @@ RECORD_PATTERNS = [
     r'(?i)\bCartella(?:\s*Clinica)?(?:\s*(?:N\.?|n\.?|N°|n°|nº))?[:\s]+(?P<v>[0-9A-Za-z\/\-]+)',
     r'(?i)\b(?:Nosologico|Accettazione|Episode|MRN|Medical\s*Record\s*N°?|Case\s*N°?|File\s*N°?)[:\s]+(?P<v>[0-9A-Za-z\/\-]+)',
     r'(?i)\b(?:ID\s*Paziente|Cod\.?\s*Paziente|Patient\s*ID|Code\s*patient)[:\s]+(?P<v>[0-9A-Za-z\/\-]+)',
+    r'(?i)\b(?:Hospital\s*(?:number|no\.?)|Unit\s*number|Case\s*number|Encounter\s*(?:number|no\.?)|Admission\s*(?:number|no\.?)|'
+    r'(?:n[°º]|num[ée]ro)\s*(?:de\s*)?(?:dossier|s[ée]jour|venue)|IPP|NIP|NDA|'
+    r'Fallnummer|Fall-?Nr\.?|Patientennummer|Patienten-?Nr\.?|Aufnahmenummer|Aufnahme-?Nr\.?|Krankenblatt-?Nr\.?|'
+    r'(?:n[úu]mero\s*de\s*)?historia(?:\s*cl[íi]nica)?|NHC|N[º°]\s*(?:de\s*)?historia|episodio|'
+    r'(?:n[úu]mero\s*de\s*)?processo(?:\s*cl[íi]nico)?|Processo\s*n[ºo°]?|epis[óo]dio|'
+    r'Pati[ëe]ntnummer|Pati[ëe]nt-?nr\.?|Opnamenummer|Dossiernummer|'
+    r'Nr\.?\s*(?:ksi[ęe]gi\s*g[łl][óo]wnej|historii\s*choroby|hospitalizacji)|'
+    r'Nr\.?\s*(?:foaie\s*de\s*observa[țt]ie|FO)|FOCG|Foaie\s*de\s*observa[țt]ie(?:\s*nr\.?)?)'
+    r'\s*(?:n(?:o|r|°|º)?\.?|number|nummer|n[úu]mero)?\s*[:#]?\s*(?P<v>(?=[A-Za-z0-9\/\-]*\d)[A-Za-z0-9][A-Za-z0-9\/\-]*)',
     r'(?i)\bCodice\s*Fiscale[:\s]+(?P<v>[A-Za-z0-9]+)',
     r'(?i)\b(?:Referto|Report)\s*(?:N\.?|n\.?|N°|nº)[:\s]*(?P<v>[0-9A-Za-z\/\-]{3,})',
     # "Verbale di Pronto Soccorso n. 0912345", "Scheda di dimissione n. 12345"
@@ -232,6 +293,9 @@ ORIGIN_PATTERNS = [
 # 7. Medici refertatori e firme
 DOCTOR_PATTERNS = [
     r'\b(?i:Dott\.ssa|Dott\.?|Dr\.ssa|Dr\.?|Prof\.ssa|Prof\.?|Dott\.re|Inf\.)\s+(?P<v>' + _CAP_NAME + r')',
+    # "Dr. med.", "Prof. Dr.", "lek. med.", "dr n. med.", "Dra.", "Pr", "MUDr.", "dr." (NL)
+    r'\b(?i:Dr\.?\s*med\.?(?:\s*dent\.?)?|Prof\.?\s*Dr\.?(?:\s*med\.?)?|PD\s*Dr\.?|lek\.\s*med\.|lek\.|dr\s*n\.\s*med\.|dr\s*hab\.|'
+    r'Dra\.?|Pr\.?|MUDr\.?|drs\.?|dr\.)\s+(?P<v>' + _CAP_NAME + r')',
     r'(?i)\bFirmato\s*(?:digitalmente)?\s*da[:\s]+(?P<v>[^\n\r,;\t]{3,})',
     # "Documento firmato digitalmente ai sensi del D.Lgs. 82/2005 da: Mario Rossi"
     r'(?i)\bfirmat[oa]\s+(?:digitalmente|elettronicamente|con\s+firma\s+digitale)[^\n]{0,90}?\b(?:da|dal|dalla|dal\s+dott\.?|dalla\s+dott\.ssa)[:\s]+(?P<v>[^\n\r,;\t(]{3,})',
@@ -241,7 +305,10 @@ DOCTOR_PATTERNS = [
     r'\b(?:CN|cn|GN|SN|givenName|surname|commonName)\s*=\s*(?P<v>[^,;/\n=]{2,60})',
     r'\b(?:SERIALNUMBER|serialNumber|2\.5\.4\.5)\s*=\s*(?P<v>[A-Z:\-]*[A-Z0-9]{6,})',
     r'(?i)\bSigned\s*by[:\s]+(?P<v>[^\n\r,;\t]{3,})',
-    r'(?i)\b(?:Medico|Physician|Doctor|Esaminatore|Refertatore|Dirigente\s*Medico|Médecin|Médico)[:\s]+(?P<v>[^\n\r,;\t]{3,})',
+    # "Medico: Rossi", "Medico curante Luca Bianchi"; mai "Medico di guardia" (il ruolo non e' un nome)
+    r'(?i)\b(?:Medico|Physician|Doctor|Esaminatore|Refertatore|Dirigente\s*Medico|Médecin|Médico)'
+    r'(?:\s+(?:curante|di\s+guardia|di\s+base|di\s+famiglia|referente|responsabile|refertante|in\s+turno|di\s+reparto))?'
+    r'[:\s]+(?P<v>(?-i:[A-ZÀ-ÖØ-Þ])[^\n\r,;\t]{2,})',
 ]
 
 # 8. Personale sanitario e destinatari
@@ -267,9 +334,21 @@ HOSPITAL_KEYWORDS = [
     "Krankenhaus",
     "Medical Center",
     "Centre Hospitalier",
+    "Charité",
+    "Universitätsmedizin",
+    "Universitätsklinikum",
 ]
 HOSPITAL_PATTERNS = [
     r'(?i)\b(?:Ospedale|Hospital|Hopital|Krankenhaus|Policlinico|IRCCS|Azienda\s*Ospedaliera|Azienda\s*Sanitaria|ASL|AUSL|USL|Centre\s*Hospitalier|Medical\s*Center|Fondazione)\s+[A-Za-zÀ-ÖØ-öø-ÿ\']+(?:\s+[A-Za-zÀ-ÖØ-öø-ÿ\']+)*',
+    # altre lingue: "Hôpital Lariboisière", "Charité – Universitätsmedizin Berlin", "Spitalul Clinic de Urgență",
+    # "Szpital Kliniczny Dzieciątka Jezus", "Amsterdam UMC", "St Thomas' Hospital", "Hospital de Santa Maria"
+    r'\b(?i:H[ôo]pital|CHU|CHRU|Clinique|Centre\s+hospitalier|Klinikum|Universit[äa]tsklinikum|Charit[ée]|Universit[äa]tsmedizin|'
+    r'Klinik|Krankenhaus|Spital|Spitalul|Szpital|Ziekenhuis|Hospital\s+Universitario|Hospital|Centro\s+Hospitalar|'
+    r'Cl[íi]nica|Infirmary|Medical\s+Centre)'
+    r'(?:[ \t]*[–\-][ \t]*|[ \t]+)(?:(?:de|du|des|la|le|der|des|di|del|de\s+la|da|do|dos|das|im|am|zu|van|het|w|im\.)[ \t]+)*'
+    r'[A-ZÀ-ÖĄĆĘŁŃÓŚŹŻȘȚ][\w\'’\-]*(?:[ \t]+(?:(?:de|del|di|da|do|der|des|du|la|le|im|am|zu|w|van|het)[ \t]+)?[A-ZÀ-ÖĄĆĘŁŃÓŚŹŻȘȚ\d][\w\'’\-]*){0,5}',
+    r'\b(?:St\.?|Saint|San|Santa|Sankt)[ \t]+[A-Z][\w\'’]+(?:[ \t]+[A-Z][\w\'’]+)?[ \t]+(?i:Hospital|Infirmary|Klinik|Hospital)\b',
+    r'\b[A-Z][\w\-]+[ \t]+(?:UMC|MC|Medical\s+Center|Ziekenhuis|Hospital|Infirmary)\b',
 ]
 
 # 10. Date (tutte: di ricovero, esame, controllo)
@@ -278,6 +357,9 @@ DATE_PATTERNS = [
     r'(?i)\b\d{1,2}°?\s+' + _MONTHS_IT + r'\s+\d{2,4}\b',          # 12 marzo 1985
     r'(?i)\b' + _MONTHS_IT + r'\s+(?:19|20)\d{2}\b',                 # marzo 2024
     r'(?i)\b' + _MONTHS_EN + r'\s+\d{1,2},?\s+\d{4}\b',            # March 12, 1985
+    # "3 September 2023", "14. März 2024", "12 de mayo de 2026", "13 marca 2023", "1er mars 2024"
+    r'(?i)\b\d{1,2}(?:er|st|nd|rd|th|º|\.)?\s+(?:de\s+)?' + _MONTHS_EU + r'\.?\s+(?:de\s+)?(?:19|20)\d{2}\b',
+    r'(?i)\b' + _MONTHS_EU + r'\s+(?:de\s+)?(?:19|20)\d{2}\b',          # "März 2024", "mayo de 2024"
     r'\b(?:19|20)\d{2}-\d{2}-\d{2}(?:[T ]\d{2}:\d{2}(?::\d{2})?)?\b',  # data ISO
 ]
 
@@ -881,7 +963,7 @@ def find_matches(
     # --- Parole chiave letterali delle strutture sanitarie ---------------
     if level >= CATEGORY_LEVELS["Struttura sanitaria"]:
         for kw in HOSPITAL_KEYWORDS:
-            for m in re.finditer(re.escape(kw), text, re.IGNORECASE):
+            for m in re.finditer(r"(?<!\w)" + re.escape(kw) + r"(?!\w)", text, re.IGNORECASE):
                 add(m.start(), m.end(), "Struttura sanitaria", 3)
 
     excl = excluded_categories()
@@ -950,7 +1032,8 @@ def collect_names(text: str) -> List[str]:
     for value, kind in clin_llm.entities(text):
         if kind == "PERSONA":
             found.append(value)
-            found.extend(t for t in value.split() if len(t) >= 3)
+            # le particelle ("van", "der", "de") non sono parti del nome da cercare da sole
+            found.extend(t for t in value.split() if len(t) >= 3 and t.casefold() not in clin_llm._PARTICLES)
     sources = [(rx, False) for rx in _NAME_SOURCES] + [(rx, True) for rx in _STRONG_NAME_SOURCES]
     for rx, strong in sources:
         for m in rx.finditer(text):

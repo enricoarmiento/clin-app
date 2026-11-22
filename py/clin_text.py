@@ -91,16 +91,21 @@ class _Registry:
     """Assegna segnaposto stabili; riconduce le parti di un nome alla persona.
 
     Il tipo della persona (PAZIENTE, MEDICO, PERSONA...) lo decide la prima
-    occorrenza nel testo; le parti del nome ("Rossi", "Mario") e le sue
-    ricorrenze riprendono lo stesso segnaposto.
+    occorrenza nel testo. Due nominativi completi sono la stessa persona solo se
+    uno contiene l'altro («Mario Rossi», «ROSSI MARIO», «Rossi Mario Luigi»): un
+    nome di battesimo o un cognome in comune non basta («Luca Verdi» non e'
+    «Esposito Luca», la figlia «Elena Rossi» non e' il paziente «Mario Rossi»).
+    Una parola sola («Rossi») si attribuisce solo se appartiene a una persona sola.
     """
 
     def __init__(self, names: Sequence[str]):
         self.by_value: Dict[Tuple[str, str], str] = {}
         self.mapping: Dict[str, str] = {}
         self.counters: Dict[str, int] = {}
-        self.person_of: Dict[str, str] = {}   # nome o parte -> segnaposto
-        self.group_of: Dict[str, str] = {}    # nome o parte -> nominativo completo
+        self.person_of: Dict[str, str] = {}   # nome completo -> segnaposto
+        self.token_of: Dict[str, Optional[str]] = {}  # parola -> segnaposto (None se ambigua)
+        self.people: Dict[str, frozenset] = {}  # segnaposto -> parole del nome
+        self.group_of: Dict[str, Optional[str]] = {}  # nome o parola -> nominativo completo noto
         self.isolated: Dict[str, str] = {}    # persone citate solo dal contesto
         self.add_names(names)
 
@@ -112,7 +117,20 @@ class _Registry:
                 continue
             self.group_of[key] = full
             for tok in key.split():
-                self.group_of.setdefault(tok, full)
+                prev = self.group_of.get(tok, full)
+                # parola comune a due nominativi diversi: non indica nessuno dei due
+                self.group_of[tok] = full if prev is not None and _norm(prev) == key else None
+
+    def _register(self, ph: str, names: Sequence[str]) -> None:
+        tokens = set(self.people.get(ph, frozenset()))
+        for name in names:
+            key = _norm(name)
+            self.person_of[key] = ph
+            tokens.update(key.split())
+        self.people[ph] = frozenset(tokens)
+        for tok in tokens:
+            owner = self.token_of.get(tok, ph)
+            self.token_of[tok] = ph if owner == ph else None
 
     @classmethod
     def from_mapping(cls, mapping: Dict[str, str]) -> "_Registry":
@@ -126,8 +144,7 @@ class _Registry:
             reg.by_value[(kind, _norm(original))] = ph
             reg.counters[kind] = max(reg.counters.get(kind, 0), int(num))
             if kind in _PERSON_KINDS:
-                for k in [_norm(original)] + _norm(original).split():
-                    reg.person_of.setdefault(k, ph)
+                reg._register(ph, [original])
         return reg
 
     def _new(self, kind: str, original: str) -> str:
@@ -135,6 +152,33 @@ class _Registry:
         ph = f"[{kind}_{self.counters[kind]}]"
         self.mapping[ph] = original
         self.by_value[(kind, _norm(original))] = ph
+        return ph
+
+    def _person(self, kind: str, original: str) -> str:
+        key = _norm(original)
+        tokens = frozenset(key.split())
+        if key in self.person_of:
+            return self.person_of[key]
+        if len(tokens) >= 2:
+            # stessa persona solo se un nome contiene l'altro (ordine e maiuscole a parte)
+            for ph, known in self.people.items():
+                if tokens <= known or known <= tokens:
+                    if len(tokens) > len(known):  # "Rossi" poi "Mario Rossi": si conserva il nome intero
+                        self.mapping[ph] = original
+                    self._register(ph, [original])
+                    return ph
+            full = self.group_of.get(key) or original
+        else:
+            tok = next(iter(tokens), "")
+            owner = self.token_of.get(tok)
+            if owner:
+                return owner
+            full = self.group_of.get(tok) or original
+            fkey = _norm(full)
+            if fkey in self.person_of:
+                return self.person_of[fkey]
+        ph = self._new(kind, full)
+        self._register(ph, [original, full])
         return ph
 
     def get(self, kind: str, original: str, link: bool = True) -> str:
@@ -150,21 +194,15 @@ class _Registry:
             self.isolated[key] = self._new(kind, original)
             return self.isolated[key]
         if kind in _PERSON_KINDS:
-            full = (self.group_of.get(key) or next(
-                (self.group_of[t] for t in key.split() if t in self.group_of), None)) if link else None
-            # "Sig. Rossi", "Rossi Mario": si prova con il nome intero e con le parti
-            for k in [key] + ([_norm(full)] if full else []) + (key.split() if link else []):
-                if k in self.person_of:
-                    return self.person_of[k]
             # "Giulia" dopo "la figlia Giulia Ferri": stesso familiare (mai il contrario)
-            for k in [key] + ([_norm(full)] if full else []):
-                if k in self.isolated:
-                    return self.isolated[k]
-            ph = self._new(kind, full or original)
-            parts = (key.split() + (_norm(full).split() + [_norm(full)] if full else [])) if link else []
-            for k in [key] + parts:
-                self.person_of.setdefault(k, ph)
-            return ph
+            if key in self.isolated:
+                return self.isolated[key]
+            if len(key.split()) == 1 and not self.token_of.get(key):
+                for full, ph in self.isolated.items():
+                    if key in full.split() and sum(key in f.split() for f in self.isolated) == 1 \
+                            and key not in self.token_of:
+                        return ph
+            return self._person(kind, original)
         if (kind, key) in self.by_value:
             return self.by_value[(kind, key)]
         return self._new(kind, original)
@@ -225,6 +263,16 @@ def _replace(text: str, registry: _Registry, level: int,
     return re.sub(r"(\[[A-Z_]+_\d+\])(?:[ \t]+\1)+", r"\1", "".join(out))
 
 
+def _without_relatives(text: str, names: Sequence[str], level: int, explicit, whitelist) -> List[str]:
+    """I familiari citati dal contesto («la figlia Elena Rossi») non definiscono persone a cui
+    ricondurre le parole sole: «il sig. Rossi» resta il paziente, non la figlia."""
+    kin = set()
+    for s, e, cat in find_spans(text, level, explicit, whitelist, names):
+        if cat == "Persone":
+            kin.add(_norm(re.sub(r"(?i)^(sig\.ra|sig\.?|dott\.ssa|dott\.?)\s+", "", text[s:e])))
+    return [n for n in names if _norm(n) not in kin]
+
+
 def anonymize_text(
     text: str,
     level: int = DEFAULT_LEVEL,
@@ -237,7 +285,7 @@ def anonymize_text(
     """Sostituisce i dati sensibili di un testo con segnaposto stabili."""
     all_names = list(names or []) + collect_names(text)
     registry = _registry or (_Registry.from_mapping(previous) if previous else _Registry([]))
-    registry.add_names(all_names)
+    registry.add_names(_without_relatives(text, all_names, level, explicit, whitelist))
     counts: Dict[str, int] = {}
     new = _replace(text, registry, level, explicit, whitelist, all_names, counts)
     return TextResult(new, dict(registry.mapping), counts)

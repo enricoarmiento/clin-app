@@ -75,3 +75,30 @@ def spans(text, level, previous_json):
 
 def restore(text, mapping_json):
     return restore_text(text, json.loads(mapping_json or "{}"))
+
+
+def extract(path):
+    """Testo grezzo di DOCX, TXT, MD (per unirlo agli altri documenti prima dell'anonimizzazione)."""
+    from clin_text import _docx_text, _read_text
+    p = Path(path)
+    return _docx_text(p) if p.suffix.lower() == ".docx" else _read_text(p)
+
+
+def run_bundle(items_json, level, previous_json):
+    """
+    Piu' documenti in un solo testo per la chat (PDF, Word, testi incollati, foto),
+    anonimizzati insieme: ogni persona ha lo stesso segnaposto in tutti i documenti.
+    items: [{"titolo": "...", "pagine": ["testo", ...]}]
+    """
+    items = json.loads(items_json)
+    blocks = []
+    for it in items:
+        pages = [t for t in it["pagine"]]
+        body = "\n\n".join(f"(pagina {i})\n{t.strip()}" if len(pages) > 1 else t.strip()
+                            for i, t in enumerate(pages, 1) if t.strip())
+        blocks.append(f"### {it['titolo']}\n{body}" if len(items) > 1 else body)
+    prev, names = _prev(previous_json)
+    res = anonymize_text("\n\n".join(blocks), level=int(level), previous=prev or None, names=names)
+    res.notes = [f"{it['titolo']}: nessun testo (scansione). Caricarla come foto per l'OCR."
+                 for it in items if not any(t.strip() for t in it["pagine"])]
+    return _out(res)

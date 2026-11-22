@@ -302,6 +302,42 @@ CATEGORY_LEVELS: Dict[str, int] = {
     "Persone": 1,
 }
 
+# Categorie che l'utente puo' escludere dalle impostazioni (tutte attive per
+# impostazione predefinita). "Personalizzati" (lista «Rimuovi sempre») resta sempre attiva.
+CONTROL_CATEGORIES: Dict[str, str] = {
+    "Nome paziente": "Nome e cognome del paziente, ovunque compaiano",
+    "Persone": "Familiari, caregiver e altre persone citate",
+    "Medici": "Medici (firme, refertanti, MMG)",
+    "Personale sanitario": "Infermieri, tecnici, operatori",
+    "ID ufficiali": "Codice fiscale, tessera sanitaria, STP/ENI, passaporto",
+    "Identificativi clinici": "Nosologico, cartella, accettazione, ricetta, campione",
+    "Documenti": "Numeri di documento e firme digitali",
+    "Data di nascita": "Data e luogo di nascita, età oltre gli 89 anni",
+    "Date": "Altre date (ricovero, esami, visite)",
+    "Contatti": "Telefono, email, indirizzo, CAP e comune di residenza",
+    "Dati bancari": "IBAN e carte",
+    "Provenienza": "Nazionalità e luogo di provenienza",
+    "Struttura sanitaria": "Nome di ospedali, ASL e reparti",
+    "Immagini e loghi": "Immagini nei PDF: loghi, timbri, firme scansionate, codici a barre e QR, foto",
+}
+
+_excl_cache: Dict[str, object] = {"mtime": None, "value": frozenset()}
+
+
+def excluded_categories() -> frozenset:
+    """Categorie escluse nelle impostazioni (lette di nuovo solo se il file cambia)."""
+    try:
+        import clin_settings
+        mtime = clin_settings.PATH.stat().st_mtime if clin_settings.PATH.exists() else 0
+        if mtime != _excl_cache["mtime"]:
+            raw = clin_settings.load().get("categorie_escluse") or []
+            _excl_cache["value"] = frozenset(c for c in raw if c in CONTROL_CATEGORIES)
+            _excl_cache["mtime"] = mtime
+    except Exception:
+        return frozenset()
+    return _excl_cache["value"]  # type: ignore[return-value]
+
+
 _PATTERN_GROUPS: List[Tuple[str, List[str], int]] = [
     ("ID ufficiali", OFFICIAL_ID_PATTERNS, 2),
     ("Nome paziente", PATIENT_LABEL_PATTERNS, 2),
@@ -848,6 +884,14 @@ def find_matches(
             for m in re.finditer(re.escape(kw), text, re.IGNORECASE):
                 add(m.start(), m.end(), "Struttura sanitaria", 3)
 
+    excl = excluded_categories()
+    if excl:
+        if "Nome paziente" in excl:
+            excl = excl | {"Ricorrenze nominativo"}
+        # anche i frammenti di un dato lasciato in chiaro ("02/11" dentro una data) restano
+        kept = [(m.start, m.end) for m in matches if m.category in excl]
+        matches = [m for m in matches if m.category not in excl
+                   and not any(s <= m.start and m.end <= e and (s, e) != (m.start, m.end) for s, e in kept)]
     return matches
 
 
@@ -1225,6 +1269,18 @@ def _apply_redactions(page: "fitz.Page", remove_images: bool) -> None:
         page.apply_redactions()
 
 
+def _apply_image_redactions(page: "fitz.Page") -> None:
+    """Applica le sole redazioni delle immagini: testo e grafica vettoriale restano."""
+    kw = {"images": getattr(fitz, "PDF_REDACT_IMAGE_REMOVE", 1)}
+    if hasattr(fitz, "PDF_REDACT_TEXT_NONE"):
+        kw["text"] = fitz.PDF_REDACT_TEXT_NONE
+    kw["graphics"] = getattr(fitz, "PDF_REDACT_LINE_ART_NONE", 0)
+    try:
+        page.apply_redactions(**kw)
+    except TypeError:  # PyMuPDF vecchio: le immagini restano a _apply_redactions
+        pass
+
+
 # --------------------------------------------------------------------------
 # Anonimizzazione di un documento
 # --------------------------------------------------------------------------
@@ -1306,16 +1362,23 @@ def anonymize_document(
                 clin_ocr.replace_with_redacted_image(page, rects, fill_color)
                 continue
 
-            if remove_images:
+            if remove_images and "Immagini e loghi" not in excluded_categories():
+                # loghi, timbri, firme scansionate, codici a barre e QR, foto: le immagini
+                # vengono tolte prima del testo, senza cancellare il testo che le sovrappone
+                # (una carta intestata a tutta pagina non deve portarsi via il referto)
+                n_img = 0
                 for info in page.get_image_info():
                     try:
                         page.add_redact_annot(fitz.Rect(info["bbox"]), fill=(1, 1, 1))
-                        result.redactions += 1
-                        result.per_category["Immagini e loghi"] = (
-                            result.per_category.get("Immagini e loghi", 0) + 1
-                        )
+                        n_img += 1
                     except Exception:
                         pass
+                if n_img:
+                    _apply_image_redactions(page)
+                    result.redactions += n_img
+                    result.per_category["Immagini e loghi"] = (
+                        result.per_category.get("Immagini e loghi", 0) + n_img
+                    )
 
             detections = analyze_page(
                 page,
@@ -1459,6 +1522,10 @@ def safe_output_stem(stem: str, level: int, names: Sequence[str] = (),
         spaced, max(level, 10), explicit_targets, True, derived_targets=names)
         if m.category in ("ID ufficiali", "Personalizzati", "Ricorrenze nominativo",
                           "Date", "Dati bancari", "Persone", "Documenti")]
+    # i nomi trovati nel documento compaiono spesso in minuscolo: "dimissione_ferrari"
+    for tok in {t for n in names for t in re.findall(r"[^\W\d_]{3,}", n)}:
+        spans += [(m.start(), m.end()) for m in
+                  re.finditer(r"(?<![^\W\d_])" + re.escape(tok) + r"(?![^\W\d_])", spaced, re.IGNORECASE)]
     if not spans:
         return stem
     merged: List[Tuple[int, int]] = []

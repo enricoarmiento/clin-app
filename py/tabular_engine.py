@@ -27,7 +27,7 @@ from typing import Callable, Dict, List, Optional, Sequence, Set, Tuple
 
 import clin_llm
 from anonymize_engine import (
-    CATEGORY_LEVELS, FileResult, find_matches, protected_spans, subtract_protected,
+    CATEGORY_LEVELS, FileResult, excluded_categories, find_matches, protected_spans, subtract_protected,
 )
 
 __all__ = [
@@ -304,7 +304,9 @@ class _PseudonymBook:
 
 
 # prefisso per tipo di dato: "Paziente", "Cognome e nome", "Nominativo" -> PAZ
-_CATEGORY_PREFIX = {"Nome paziente": "PAZ", "ID ufficiali": "ID", "Identificativi clinici": "IDC"}
+_CATEGORY_PREFIX = {"Nome paziente": "PAZ", "ID ufficiali": "ID", "Identificativi clinici": "IDC",
+                    "Medici": "MED", "Personale sanitario": "OPE", "Persone": "PER",
+                    "Documenti": "DOC", "Struttura sanitaria": "STR"}
 
 
 def _prefix_from_header(header: str, col: int) -> str:
@@ -337,8 +339,20 @@ _HEADER_RULES: List[Tuple[re.Pattern, str, str]] = [
                 r"|(?:comune|citt[aà]|city|localit[aà]|provincia|prov|regione di residenza|frazione|luogo)"
                 r"(?: (?:di |del |della )?(?:residenza|domicilio|abitazione|provenienza))?"),
      MODE_ALL, "Contatti"),
-    (re.compile(r"(?:id paziente|cod(?:ice)? paziente|patient id|mrn|nosologico|n nosologico|cartella(?: clinica)?|n cartella|accettazione|n accettazione)"),
+    (re.compile(r"(?:id paziente|cod(?:ice)? paziente|patient id|mrn|nosologico|n nosologico|cartella(?: clinica)?|n cartella|accettazione|n accettazione"
+                r"|(?:n |numero |cod(?:ice)? |id )?(?:ricetta|nre|impegnativa|prenotazione|campione|provetta|accession(?: number)?|episodio|ricovero|sdo|pratica|referto|esame|letto|stanza|barcode|protocollo)(?: n)?)"),
      MODE_PSEUDO, "Identificativi clinici"),
+    # altre persone: medici, personale, familiari (pseudonimo per ruolo, collegabile tra fogli)
+    (re.compile(r"(?:(?:nome |cognome )*(?:medico|dott(?:ore|oressa)?|refertante|firmatario|firma(?: medico)?|mmg|pls|medico curante|curante|chirurgo|operatore 1|primo operatore|anestesista|radiologo|cardiologo|specialista|physician|doctor)(?: \w+){0,3})"),
+     MODE_PSEUDO, "Medici"),
+    (re.compile(r"(?:(?:nome |cognome )*(?:infermier[ea]|operatore|tecnico|ostetrica|compilatore|compilato da|inserito da|autore|nurse|operator)(?: \w+){0,3})"),
+     MODE_PSEUDO, "Personale sanitario"),
+    (re.compile(r"(?:(?:nome |cognome )*(?:familiare|caregiver|tutore|amministratore di sostegno|referente|contatto(?: di)?(?: emergenza)?|parente|coniuge|madre|padre|figli[oa]|next of kin|emergency contact)(?: \w+){0,3})"),
+     MODE_PSEUDO, "Persone"),
+    (re.compile(r"(?:carta (?:d )?identit[aà]|n documento|numero documento|documento|patente|permesso di soggiorno)"),
+     MODE_PSEUDO, "Documenti"),
+    (re.compile(r"(?:ospedale|struttura|presidio|asl|ausl|asst|azienda sanitaria|centro|centro arruolante|hospital)"),
+     MODE_PSEUDO, "Struttura sanitaria"),
 ]
 
 
@@ -354,10 +368,27 @@ def header_category(header: str, level: int = 10) -> Optional[Tuple[str, str]]:
     norm = re.sub(r"[\s_\-\.\/:#°]+", " ", (header or "").lower()).strip()
     if not norm:
         return None
+    excl = excluded_categories()
     for rx, mode, category in _HEADER_RULES:
         if level >= CATEGORY_LEVELS.get(category, 99) and rx.fullmatch(norm):
-            return mode, category
+            return None if category in excl else (mode, category)
     return None
+
+
+def _person_column(values: Sequence[str]) -> bool:
+    """
+    Colonna di nominativi riconosciuta dal contenuto (intestazione non nota, es. «Referente
+    studio»): la maggior parte delle celle e' per intero il nome di una persona secondo il
+    modello locale. Senza modello locale non si decide nulla (troppi falsi positivi).
+    """
+    sample = [" ".join(v.split()) for v in values if v and v.strip()][:40]
+    sample = [v for v in sample if 3 <= len(v) <= 60 and not re.search(r"\d", v)]
+    if len(sample) < 3 or not clin_llm.engine():
+        return False
+    found = {" ".join(t.split()).casefold() for t, kind in clin_llm.entities(".\n".join(sample) + ".")
+             if kind == "PERSONA"}
+    hits = sum(1 for v in sample if v.casefold() in found)
+    return hits >= max(3, int(len(sample) * 0.6))
 
 
 def header_rule(header: str, level: int) -> Optional[str]:
@@ -460,6 +491,26 @@ def plan_sheet(
                     derived.extend(t for t in re.findall(r"[A-Za-zÀ-ÖØ-öø-ÿ'’]{3,}", full))
         derived = sorted(set(derived), key=len, reverse=True)
 
+    # colonne di nominativi senza intestazione nota: decise dal contenuto
+    try:
+        import clin_settings
+        by_content = clin_settings.load().get("colonne_dal_contenuto", True)
+    except ImportError:  # app web: nessun modello locale, nessuna impostazione
+        by_content = False
+    if (settings.has_header and settings.default_mode == MODE_AUTO and by_content
+            and "Persone" not in excluded_categories()):
+        for c in range(sheet.column_count):
+            if c in explicit_cols or c in header_modes:
+                continue
+            col = [str(row[c]) for row in sheet.rows[first_data_row:first_data_row + 60]
+                   if c < len(row) and row[c] is not None]
+            if _person_column(col):
+                header_modes[c], header_prefix[c] = MODE_PSEUDO, "PER"
+                for v in col:
+                    derived.append(" ".join(v.split()))
+        derived = sorted(set(derived), key=len, reverse=True)
+    sheet.detected = list(derived)  # per ripulire anche il nome del file
+
     person_cols = [c for c, p in header_prefix.items() if p == "PAZ"]
     age_cols = {c for c, h in enumerate(header)
                 if c not in explicit_cols and _AGE_HEADER.fullmatch(_norm_header(h))}
@@ -533,6 +584,7 @@ def anonymize_table(
                 return result
             plans = plan_sheet(sheet, settings, book)
             all_plans[sheet.name] = plans
+            result.detected_names.extend(getattr(sheet, "detected", [])[:200])
             for plan in plans.values():
                 result.redactions += 1
                 result.per_category[plan.category] = (
